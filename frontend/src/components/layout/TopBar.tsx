@@ -1,7 +1,8 @@
 "use client";
 
 import React from "react";
-import { Bell, HelpCircle, ChevronRight, ShieldCheck, Database, RefreshCw } from "lucide-react";
+import { Bell, HelpCircle, ChevronRight, RefreshCw } from "lucide-react";
+import { roleLabel, useSession } from "@/lib/session";
 
 interface TopBarProps {
   breadcrumbs?: { label: string; href?: string }[];
@@ -14,6 +15,8 @@ export function TopBar({
   onRefresh,
   isRefreshing = false,
 }: TopBarProps) {
+  const { user, loading } = useSession();
+
   return (
     <header className="h-16 bg-white border-b border-slate-200 px-8 flex items-center justify-between sticky top-0 z-30">
       {/* Left: Breadcrumbs */}
@@ -67,10 +70,18 @@ export function TopBar({
 
         <div className="h-4 w-px bg-slate-200" />
 
-        {/* Official Designation Pill */}
+        {/* Authorised session identity */}
         <div className="flex items-center gap-2 px-3 py-1 bg-slate-100 border border-slate-200 rounded-full text-xs font-medium text-slate-700">
-          <span className="w-2 h-2 rounded-full bg-emerald-500" />
-          <span>Govt. Enforcement Portal (Live)</span>
+          <span
+            className={`w-2 h-2 rounded-full ${loading ? "bg-slate-300" : user ? "bg-emerald-500" : "bg-red-500"}`}
+          />
+          <span>
+            {loading
+              ? "Verifying session…"
+              : user
+                ? `${roleLabel(user.role)} · ${user.name}`
+                : "Unauthenticated"}
+          </span>
         </div>
       </div>
     </header>

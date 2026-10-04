@@ -3,6 +3,7 @@
 import React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { roleLabel, useSession } from "@/lib/session";
 import {
   LayoutDashboard,
   ScanSearch,
@@ -16,7 +17,7 @@ import {
   Settings,
   Shield,
   LogOut,
-  ChevronRight,
+  Loader2,
 } from "lucide-react";
 
 interface NavItem {
@@ -24,64 +25,94 @@ interface NavItem {
   href: string;
   icon: React.ElementType;
   badge?: string;
+  /** Hides the entry unless the signed-in role holds this permission. */
+  permission?: string;
 }
 
 export function Sidebar() {
   const pathname = usePathname();
+  const { user, loading, signOut } = useSession();
 
   const mainNav: NavItem[] = [
     { label: "Dashboard", href: "/", icon: LayoutDashboard },
-    { label: "New Inspection", href: "/inspections/new", icon: ScanSearch, badge: "Action" },
-    { label: "Inspections", href: "/inspections", icon: ListChecks },
-    { label: "Products", href: "/products", icon: Package },
-    { label: "Reports", href: "/reports", icon: FileText },
+    {
+      label: "New Inspection",
+      href: "/inspections/new",
+      icon: ScanSearch,
+      badge: "Action",
+      permission: "SCAN_CREATE",
+    },
+    { label: "Inspections", href: "/inspections", icon: ListChecks, permission: "SCAN_VIEW" },
+    { label: "Products", href: "/products", icon: Package, permission: "SCAN_VIEW" },
+    { label: "Reports", href: "/reports", icon: FileText, permission: "REPORT_VIEW" },
   ];
 
   const intelligenceNav: NavItem[] = [
-    { label: "Compliance Analytics", href: "/analytics", icon: BarChart3 },
-    { label: "Rule Knowledge Base", href: "/rules", icon: BookOpen },
+    {
+      label: "Compliance Analytics",
+      href: "/analytics",
+      icon: BarChart3,
+      permission: "ANALYTICS_VIEW",
+    },
+    { label: "Rule Knowledge Base", href: "/rules", icon: BookOpen, permission: "RULE_VIEW" },
   ];
 
   const adminNav: NavItem[] = [
-    { label: "Users & Roles", href: "/users", icon: Users },
-    { label: "Audit Logs", href: "/audit-logs", icon: History },
-    { label: "Settings", href: "/settings", icon: Settings },
+    { label: "Users & Roles", href: "/users", icon: Users, permission: "USER_VIEW" },
+    { label: "Audit Logs", href: "/audit-logs", icon: History, permission: "AUDIT_VIEW" },
+    { label: "Settings", href: "/settings", icon: Settings, permission: "SYSTEM_CONFIGURE" },
   ];
 
-  const renderNavGroup = (title: string, items: NavItem[]) => (
-    <div className="mb-6">
-      <div className="px-3 mb-2 text-[11px] font-bold uppercase tracking-wider text-slate-400">
-        {title}
+  const { can } = useSession();
+  const visible = (items: NavItem[]) =>
+    items.filter((item) => !item.permission || can(item.permission));
+
+  const initials = (user?.name ?? "?")
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? "")
+    .join("");
+
+  const renderNavGroup = (title: string, items: NavItem[]) => {
+    const permitted = visible(items);
+    if (permitted.length === 0) return null;
+
+    return (
+      <div className="mb-6">
+        <div className="px-3 mb-2 text-[11px] font-bold uppercase tracking-wider text-slate-400">
+          {title}
+        </div>
+        <div className="space-y-1">
+          {permitted.map((item) => {
+            const Icon = item.icon;
+            const isActive = pathname === item.href;
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={`flex items-center justify-between px-3 py-2 text-xs font-medium rounded-lg transition-colors ${
+                  isActive
+                    ? "bg-[#12304A] text-white shadow-xs"
+                    : "text-slate-600 hover:text-slate-900 hover:bg-slate-100"
+                }`}
+              >
+                <div className="flex items-center gap-2.5">
+                  <Icon className={`w-4 h-4 ${isActive ? "text-blue-300" : "text-slate-500"}`} />
+                  <span>{item.label}</span>
+                </div>
+                {item.badge && (
+                  <span className="px-1.5 py-0.5 text-[10px] font-bold uppercase bg-blue-100 text-blue-800 rounded">
+                    {item.badge}
+                  </span>
+                )}
+              </Link>
+            );
+          })}
+        </div>
       </div>
-      <div className="space-y-1">
-        {items.map((item) => {
-          const Icon = item.icon;
-          const isActive = pathname === item.href;
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={`flex items-center justify-between px-3 py-2 text-xs font-medium rounded-lg transition-colors ${
-                isActive
-                  ? "bg-[#12304A] text-white shadow-xs"
-                  : "text-slate-600 hover:text-slate-900 hover:bg-slate-100"
-              }`}
-            >
-              <div className="flex items-center gap-2.5">
-                <Icon className={`w-4 h-4 ${isActive ? "text-blue-300" : "text-slate-500"}`} />
-                <span>{item.label}</span>
-              </div>
-              {item.badge && (
-                <span className="px-1.5 py-0.5 text-[10px] font-bold uppercase bg-blue-100 text-blue-800 rounded">
-                  {item.badge}
-                </span>
-              )}
-            </Link>
-          );
-        })}
-      </div>
-    </div>
-  );
+    );
+  };
 
   return (
     <aside className="w-64 bg-white border-r border-slate-200 flex flex-col justify-between shrink-0 min-h-screen">
@@ -113,22 +144,25 @@ export function Sidebar() {
       {/* Bottom User Profile Section */}
       <div className="p-3 border-t border-slate-100 bg-slate-50/70">
         <div className="flex items-center justify-between p-2 rounded-lg bg-white border border-slate-200">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-full bg-[#12304A] text-white flex items-center justify-center text-xs font-bold">
-              SV
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-8 h-8 shrink-0 rounded-full bg-[#12304A] text-white flex items-center justify-center text-xs font-bold">
+              {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : initials || "?"}
             </div>
-            <div className="text-left">
-              <div className="text-xs font-semibold text-slate-900 leading-tight">
-                Sarthak Verma
+            <div className="text-left min-w-0">
+              <div className="text-xs font-semibold text-slate-900 leading-tight truncate">
+                {loading ? "Loading…" : (user?.name ?? "Not signed in")}
               </div>
-              <div className="text-[10px] font-medium text-slate-500">
-                INSPECTOR • Dept. of LM
+              <div className="text-[10px] font-medium text-slate-500 truncate">
+                {user ? `${user.role} · ${user.department ?? "Unassigned"}` : roleLabel(null)}
               </div>
             </div>
           </div>
           <button
+            type="button"
+            onClick={() => void signOut()}
+            disabled={loading}
             title="Sign out"
-            className="p-1.5 text-slate-400 hover:text-slate-600 rounded-md transition-colors"
+            className="p-1.5 text-slate-400 hover:text-slate-600 rounded-md transition-colors disabled:opacity-40"
           >
             <LogOut className="w-3.5 h-3.5" />
           </button>

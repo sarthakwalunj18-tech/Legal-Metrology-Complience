@@ -8,25 +8,38 @@ import { Card, CardHeader, CardBody, CardFooter } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { StatusBadge } from "@/components/ui/Badge";
 import { ScanSearch, Filter, Eye, FileText, Search, Plus } from "lucide-react";
-import { API_BASE_URL } from "@/lib/api";
+import { ApiRequestError, apiFetch } from "@/lib/session";
+
+interface ScanListPayload {
+  scans: any[];
+  total: number;
+  page: number;
+  pageCount: number;
+}
 
 export default function InspectionsListPage() {
   const [scans, setScans] = useState<any[]>([]);
+  const [total, setTotal] = useState(0);
   const [searchTerm, setSearchTerm] = useState("");
   const [filterStatus, setFilterStatus] = useState("ALL");
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`${API_BASE_URL}/api/scans`, {
-      headers: { authorization: "Bearer dev-inspector" },
-    })
-      .then((res) => res.json())
+    apiFetch<ScanListPayload>("/scans")
       .then((data) => {
-        if (data.success && data.data.scans) {
-          setScans(data.data.scans);
-        }
+        setScans(data.scans ?? []);
+        setTotal(data.total ?? 0);
+        setError(null);
       })
-      .catch((err) => console.error("[FRONTEND] Error loading scans:", err))
+      .catch((cause: unknown) => {
+        setScans([]);
+        setError(
+          cause instanceof ApiRequestError
+            ? cause.message
+            : "Unable to reach the enforcement API.",
+        );
+      })
       .finally(() => setLoading(false));
   }, []);
 
@@ -79,6 +92,12 @@ export default function InspectionsListPage() {
               </Button>
             </Link>
           </div>
+
+          {error && (
+            <div className="p-4 bg-red-50 border border-red-200 rounded-xl text-xs text-red-800">
+              {error}
+            </div>
+          )}
 
           {/* Filter Bar */}
           <div className="flex flex-col md:flex-row items-center justify-between gap-4 bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
@@ -169,12 +188,19 @@ export default function InspectionsListPage() {
                         colSpan={6}
                         className="px-6 py-8 text-center text-slate-500"
                       >
-                        No inspection records matching query.
+                        {error
+                          ? "Inspection records could not be loaded."
+                          : scans.length === 0
+                            ? "No inspections have been registered yet."
+                            : "No inspection records matching query."}
                       </td>
                     </tr>
                   )}
                 </tbody>
               </table>
+            </div>
+            <div className="px-6 py-3 text-xs text-slate-500 border-t border-slate-100">
+              Showing {filteredScans.length} of {total.toLocaleString()} inspections in scope
             </div>
           </Card>
         </main>

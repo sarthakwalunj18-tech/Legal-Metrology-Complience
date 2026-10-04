@@ -7,24 +7,35 @@ import { TopBar } from "@/components/layout/TopBar";
 import { Card, CardHeader, CardBody } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Package, Search, History, Eye, Building2, CheckCircle2, AlertOctagon } from "lucide-react";
-import { API_BASE_URL } from "@/lib/api";
+import { ApiRequestError, apiFetch } from "@/lib/session";
+
+interface ProductListPayload {
+  products: any[];
+  total: number;
+  page: number;
+  pageCount: number;
+}
 
 export default function ProductsListPage() {
   const [products, setProducts] = useState<any[]>([]);
+  const [total, setTotal] = useState(0);
   const [searchTerm, setSearchTerm] = useState("");
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`${API_BASE_URL}/api/products`, {
-      headers: { authorization: "Bearer dev-inspector" },
-    })
-      .then((res) => res.json())
+    apiFetch<ProductListPayload>("/products")
       .then((data) => {
-        if (data.success && data.data.products) {
-          setProducts(data.data.products);
-        }
+        setProducts(data.products ?? []);
+        setTotal(data.total ?? 0);
+        setError(null);
       })
-      .catch(() => {})
+      .catch((cause: unknown) => {
+        setProducts([]);
+        setError(
+          cause instanceof ApiRequestError ? cause.message : "Unable to reach the enforcement API.",
+        );
+      })
       .finally(() => setLoading(false));
   }, []);
 
@@ -112,7 +123,7 @@ export default function ProductsListPage() {
                         </td>
                         <td className="px-6 py-3.5 text-center">
                           <span className="font-mono font-bold px-2 py-0.5 bg-blue-50 text-blue-700 rounded border border-blue-200">
-                            {p.totalInspections || 1} Scans
+                            {p.totalInspections ?? 0} Scans
                           </span>
                         </td>
                         <td className="px-6 py-3.5 text-right">
@@ -127,12 +138,19 @@ export default function ProductsListPage() {
                   ) : (
                     <tr>
                       <td colSpan={5} className="px-6 py-8 text-center text-slate-500">
-                        No commodity products recorded yet.
+                        {error
+                          ? "Product catalogue could not be loaded."
+                          : products.length === 0
+                            ? "No commodity products recorded yet."
+                            : "No products match your search."}
                       </td>
                     </tr>
                   )}
                 </tbody>
               </table>
+            </div>
+            <div className="px-6 py-3 text-xs text-slate-500 border-t border-slate-100">
+              Showing {filteredProducts.length} of {total.toLocaleString()} catalogue entries
             </div>
           </Card>
         </main>

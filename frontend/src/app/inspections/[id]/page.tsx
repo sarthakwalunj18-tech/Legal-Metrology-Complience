@@ -27,7 +27,7 @@ import {
   Scale,
   Sparkles,
 } from "lucide-react";
-import { API_BASE_URL } from "@/lib/api";
+import { ApiRequestError, apiFetch, useSession } from "@/lib/session";
 
 export default function InspectionDetailPage({
   params,
@@ -35,6 +35,7 @@ export default function InspectionDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = use(params);
+  const { user, can } = useSession();
 
   const [scanData, setScanData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -47,78 +48,69 @@ export default function InspectionDetailPage({
   const [officerNotes, setOfficerNotes] = useState("");
   const [isSubmittingReview, setIsSubmittingReview] = useState(false);
   const [reviewMessage, setReviewMessage] = useState<string | null>(null);
+  const [overriddenStatus, setOverriddenStatus] = useState<"COMPLIANT" | "NON_COMPLIANT">(
+    "COMPLIANT",
+  );
 
   // PDF Report State
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
   const [pdfReportUrl, setPdfReportUrl] = useState<string | null>(null);
+  const [reportError, setReportError] = useState<string | null>(null);
 
   const loadInspection = async () => {
     setLoading(true);
     setError(null);
 
     try {
-      const scanRes = await fetch(`${API_BASE_URL}/api/scans/${id}`, {
-        headers: {
-          authorization: "Bearer dev-inspector",
-        },
-      });
+      const payload = await apiFetch<{
+        scan: any;
+        images: any[];
+        analysis: any;
+      }>(`/scans/${encodeURIComponent(id)}`);
 
-      const scanJson = await scanRes.json();
-
-      console.log("========== GET SCAN RESULT ==========");
-      console.log(scanJson.data);
-      console.log("========== GET ANALYSIS ==========");
-      console.log(scanJson.data?.analysis);
-      console.log("=====================================");
-
-      if (!scanRes.ok || !scanJson.success || !scanJson.data) {
-        throw new Error("Scan record not found.");
-      }
-
-      setScanData({
-        scan: scanJson.data.scan,
-        images: scanJson.data.images,
-        analysis: scanJson.data.analysis,
-      });
-    } catch (err: any) {
-      setError(err.message || "Failed to load inspection details");
+      setScanData(payload);
+    } catch (cause) {
+      setScanData(null);
+      setError(
+        cause instanceof ApiRequestError
+          ? cause.status === 403
+            ? "You do not have access to this inspection."
+            : cause.message
+          : "Failed to load inspection details.",
+      );
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    loadInspection();
+    void loadInspection();
   }, [id]);
+
+  // A signed-in officer can never review their own inspection; the backend
+  // enforces the same rule and returns 403 INSUFFICIENT_PERMISSIONS.
+  const isOwnInspection = Boolean(scanData?.scan?.inspectorId && scanData.scan.inspectorId === user?.id);
+  const canReview = can("INSPECTION_REVIEW") && can("INSPECTION_APPROVE") && !isOwnInspection;
 
   const handleReviewSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmittingReview(true);
     setReviewMessage(null);
     try {
-      const res = await fetch(`${API_BASE_URL}/api/inspections/${id}/review`, {
+      await apiFetch(`/inspections/${encodeURIComponent(id)}/review`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          authorization: "Bearer dev-inspector",
-        },
-        body: JSON.stringify({
+        json: {
           decision: reviewDecision,
-          notes:
-            officerNotes ||
-            "Inspection verified and confirmed by authorized inspector.",
-          overriddenStatus:
-            reviewDecision === "OVERRIDDEN" ? "COMPLIANT" : undefined,
-        }),
+          notes: officerNotes.trim() || null,
+          overriddenStatus: reviewDecision === "OVERRIDDEN" ? overriddenStatus : undefined,
+        },
       });
-      const result = await res.json();
-      if (result.success) {
-        setReviewMessage(
-          `✓ Review submitted successfully as '${reviewDecision}'.`,
-        );
-      }
-    } catch (err: any) {
-      setReviewMessage(`❌ Error saving review: ${err.message}`);
+      setReviewMessage(`Review recorded as '${reviewDecision}'.`);
+      await loadInspection();
+    } catch (cause) {
+      setReviewMessage(
+        cause instanceof ApiRequestError ? cause.message : "The review could not be saved.",
+      );
     } finally {
       setIsSubmittingReview(false);
     }
@@ -126,18 +118,22 @@ export default function InspectionDetailPage({
 
   const handleGenerateReport = async () => {
     setIsGeneratingReport(true);
+    setReportError(null);
     try {
-      const res = await fetch(`${API_BASE_URL}/api/inspections/${id}/report`, {
-        method: "POST",
-        headers: { authorization: "Bearer dev-inspector" },
-      });
-      const data = await res.json();
-      if (data.success && data.data.pdfUrl) {
-        setPdfReportUrl(data.data.pdfUrl);
-        window.open(data.data.pdfUrl, "_blank");
+      const data = await apiFetch<{ pdfUrl?: string; reportNumber?: string }>(
+        `/inspections/${encodeURIComponent(id)}/report`,
+        { method: "POST" },
+      );
+      if (data.pdfUrl) {
+        setPdfReportUrl(data.pdfUrl);
+        window.open(data.pdfUrl, "_blank", "noopener");
+      } else {
+        setReportError("The backend did not return a report URL.");
       }
-    } catch (err: any) {
-      alert("Failed to generate PDF report");
+    } catch (cause) {
+      setReportError(
+        cause instanceof ApiRequestError ? cause.message : "Failed to generate the PDF report.",
+      );
     } finally {
       setIsGeneratingReport(false);
     }
@@ -180,6 +176,12 @@ export default function InspectionDetailPage({
         />
 
         <main className="p-8 max-w-7xl w-full mx-auto space-y-8 flex-1">
+          {error && (
+            <div className="p-4 bg-red-50 border border-red-200 rounded-xl text-xs text-red-800">
+              {error}
+            </div>
+          )}
+
           {/* Header Summary Banner */}
           <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-xs flex flex-col md:flex-row md:items-center md:justify-between gap-6">
             <div>
@@ -189,14 +191,14 @@ export default function InspectionDetailPage({
                 </span>
                 <StatusBadge
                   status={
-                    (analysis?.complianceStatus as StatusType) ||
-                    "REQUIRES_REVIEW"
+                    (analysis?.complianceStatus as StatusType) || "REQUIRES_REVIEW"
                   }
                   size="md"
                 />
               </div>
               <h1 className="text-2xl font-bold text-[#12304A] tracking-tight mt-2">
                 {analysis?.declarations?.generic_name?.value ??
+                  scan?.productName ??
                   "Packaged Commodity"}
               </h1>
               <p className="text-xs text-slate-500 mt-1">
@@ -204,12 +206,13 @@ export default function InspectionDetailPage({
                 <strong className="text-slate-700">
                   {analysis?.classification?.category || "Not detected"}
                 </strong>{" "}
-                • Inspected: {new Date().toLocaleDateString("en-IN")} •
+                • Inspected:{" "}
+                {scan?.createdAt ? new Date(scan.createdAt).toLocaleString("en-IN") : "Not recorded"} •
                 Location: {scan?.location || "Not specified"}
               </p>
             </div>
 
-            <div className="flex items-center gap-6 border-t md:border-t-0 md:border-l border-slate-200 pt-4 md:pt-0 md:pl-6">
+            <div className="flex flex-col items-end gap-2 border-t md:border-t-0 md:border-l border-slate-200 pt-4 md:pt-0 md:pl-6">
               <div className="text-center">
                 <div className="text-3xl font-extrabold text-[#12304A]">
                   {analysis?.complianceScore != null
@@ -221,14 +224,28 @@ export default function InspectionDetailPage({
                 </div>
               </div>
 
-              <Button
-                variant="primary"
-                onClick={handleGenerateReport}
-                loading={isGeneratingReport}
-                icon={<Download className="w-4 h-4" />}
-              >
-                Download Official PDF Report
-              </Button>
+              {can("REPORT_GENERATE") && (
+                <Button
+                  variant="primary"
+                  onClick={handleGenerateReport}
+                  loading={isGeneratingReport}
+                  icon={<Download className="w-4 h-4" />}
+                >
+                  Generate Official PDF Report
+                </Button>
+              )}
+
+              {reportError && <p className="text-[11px] text-red-700">{reportError}</p>}
+              {pdfReportUrl && (
+                <a
+                  href={pdfReportUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[11px] text-blue-700 hover:text-blue-900 underline"
+                >
+                  Open last generated report
+                </a>
+              )}
             </div>
           </div>
 
@@ -509,36 +526,69 @@ export default function InspectionDetailPage({
                   description="Verifiable Legal Metrology Gazette clauses grounding each inspection check"
                 />
                 <CardBody className="space-y-3 text-xs">
-                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-1">
-                    <div className="font-semibold text-[#12304A] flex items-center gap-1.5">
-                      <BookOpen className="w-3.5 h-3.5 text-blue-600" />
-                      Rule 6(1)(e) — Retail Sale Price Declaration
-                    </div>
-                    <p className="text-slate-600 text-[11px] leading-relaxed">
-                      "The retail sale price of the package shall clearly
-                      indicate the Maximum Retail Price in Indian Rupees
-                      inclusive of all taxes."
-                    </p>
-                    <div className="text-[10px] text-slate-400">
-                      Gazette Citation: Legal Metrology (Packaged Commodities)
-                      Rules, 2011 (Amended 2022)
-                    </div>
-                  </div>
+                  {(() => {
+                    const citations: any[] = [];
+                    const seen = new Set<string>();
 
-                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-1">
-                    <div className="font-semibold text-[#12304A] flex items-center gap-1.5">
-                      <BookOpen className="w-3.5 h-3.5 text-blue-600" />
-                      Rule 6(1)(f) — Consumer Care Contact Details
-                    </div>
-                    <p className="text-slate-600 text-[11px] leading-relaxed">
-                      "Mandates telephone helpline number and email address of
-                      authorized personnel for consumer grievance redressal."
-                    </p>
-                    <div className="text-[10px] text-slate-400">
-                      Gazette Citation: Legal Metrology Rules, 2011, Sub-rule
-                      (1)(f)
-                    </div>
-                  </div>
+                    // 1. Gather specific violation legal context
+                    if (analysis?.violations) {
+                      for (const v of analysis.violations) {
+                        if (v.legalContext) {
+                          for (const lc of v.legalContext) {
+                            const key = lc.ruleId || lc.ruleNumber;
+                            if (key && !seen.has(key)) {
+                              seen.add(key);
+                              citations.push(lc);
+                            }
+                          }
+                        }
+                      }
+                    }
+
+                    // 2. Gather general retrieved context for the commodity
+                    if (analysis?.retrievedContext) {
+                      for (const rc of analysis.retrievedContext) {
+                        const key = rc.ruleId || rc.ruleNumber;
+                        if (key && !seen.has(key)) {
+                          seen.add(key);
+                          citations.push(rc);
+                        }
+                      }
+                    }
+
+                    if (citations.length === 0) {
+                      return (
+                        <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-slate-500 text-[11px] text-center">
+                          All mandatory declarations verified against official Legal Metrology Rules, 2011.
+                        </div>
+                      );
+                    }
+
+                    return citations.map((citation, idx) => (
+                      <div
+                        key={`${citation.ruleId || idx}-${idx}`}
+                        className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-1.5"
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="font-semibold text-[#12304A] flex items-center gap-1.5">
+                            <BookOpen className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                            <span>{citation.ruleNumber}</span>
+                          </div>
+                          {citation.similarityScore > 0 && (
+                            <span className="font-mono text-[10px] px-1.5 py-0.5 bg-blue-50 text-blue-700 rounded border border-blue-200">
+                              {Math.round(citation.similarityScore * 100)}% Match
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-slate-700 text-[11px] leading-relaxed">
+                          &ldquo;{citation.statutoryObligation || citation.text}&rdquo;
+                        </p>
+                        <div className="text-[10px] text-slate-500 font-medium">
+                          Gazette Citation: {citation.sourceAct} {citation.clause ? `(${citation.clause})` : ""}
+                        </div>
+                      </div>
+                    ));
+                  })()}
                 </CardBody>
               </Card>
 
@@ -549,79 +599,105 @@ export default function InspectionDetailPage({
                   description="Authorized human review, sign-off, or manual override"
                 />
                 <CardBody>
-                  <form
-                    onSubmit={handleReviewSubmit}
-                    className="space-y-4 text-xs"
-                  >
-                    <div>
-                      <label className="font-semibold text-slate-700 block mb-1.5">
-                        Officer Determination *
-                      </label>
-                      <div className="grid grid-cols-3 gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setReviewDecision("ACCEPTED")}
-                          className={`py-2 px-3 rounded-lg border font-medium text-center transition-colors ${
-                            reviewDecision === "ACCEPTED"
-                              ? "bg-emerald-50 border-emerald-400 text-emerald-800 font-bold"
-                              : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
-                          }`}
-                        >
-                          ✓ Accept
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setReviewDecision("OVERRIDDEN")}
-                          className={`py-2 px-3 rounded-lg border font-medium text-center transition-colors ${
-                            reviewDecision === "OVERRIDDEN"
-                              ? "bg-blue-50 border-blue-400 text-blue-800 font-bold"
-                              : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
-                          }`}
-                        >
-                          ⇄ Override
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setReviewDecision("REJECTED")}
-                          className={`py-2 px-3 rounded-lg border font-medium text-center transition-colors ${
-                            reviewDecision === "REJECTED"
-                              ? "bg-red-50 border-red-400 text-red-800 font-bold"
-                              : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
-                          }`}
-                        >
-                          ✕ Reject
-                        </button>
+                  {!canReview ? (
+                    <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-[11px] text-slate-600 space-y-1">
+                      <div className="font-semibold text-slate-800 flex items-center gap-1.5">
+                        <ShieldAlert className="w-3.5 h-3.5" /> Determination unavailable
                       </div>
+                      <p>
+                        {isOwnInspection
+                          ? "This inspection was registered by you. Self-review is blocked by policy and rejected by the API."
+                          : "Your role does not hold INSPECTION_REVIEW and INSPECTION_APPROVE for this record."}
+                      </p>
+                      <p className="font-mono text-[10px] text-slate-400">
+                        Current review status: {scan?.reviewStatus ?? "NOT_SUBMITTED"}
+                      </p>
                     </div>
-
-                    <div>
-                      <label className="font-semibold text-slate-700 block mb-1">
-                        Inspector Notes & Justification
-                      </label>
-                      <textarea
-                        rows={3}
-                        value={officerNotes}
-                        onChange={(e) => setOfficerNotes(e.target.value)}
-                        placeholder="Enter inspection observations or rationale for statutory record..."
-                        className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#12304A] bg-white text-slate-800"
-                      />
-                    </div>
-
-                    {reviewMessage && (
-                      <div className="p-3 bg-slate-100 border border-slate-200 rounded-lg text-slate-800 text-[11px] font-medium">
-                        {reviewMessage}
-                      </div>
-                    )}
-
-                    <Button
-                      type="submit"
-                      variant="primary"
-                      className="w-full"
-                      loading={isSubmittingReview}
+                  ) : (
+                    <form
+                      onSubmit={handleReviewSubmit}
+                      className="space-y-4 text-xs"
                     >
-                      Submit Official Determination & Log Audit
-                    </Button>
-                  </form>
+                      <div>
+                        <label className="font-semibold text-slate-700 block mb-1.5">
+                          Officer Determination *
+                        </label>
+                        <div className="grid grid-cols-3 gap-2">
+                          {(["ACCEPTED", "OVERRIDDEN", "REJECTED"] as const).map((option) => {
+                            const active = reviewDecision === option;
+                            const tone =
+                              option === "ACCEPTED"
+                                ? "bg-emerald-50 border-emerald-400 text-emerald-800"
+                                : option === "OVERRIDDEN"
+                                  ? "bg-blue-50 border-blue-400 text-blue-800"
+                                  : "bg-red-50 border-red-400 text-red-800";
+                            return (
+                              <button
+                                key={option}
+                                type="button"
+                                onClick={() => setReviewDecision(option)}
+                                className={`py-2 px-3 rounded-lg border font-medium text-center transition-colors ${
+                                  active
+                                    ? `${tone} font-bold`
+                                    : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
+                                }`}
+                              >
+                                {option}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {reviewDecision === "OVERRIDDEN" && (
+                        <div>
+                          <label className="font-semibold text-slate-700 block mb-1.5">
+                            Overridden Compliance Status *
+                          </label>
+                          <select
+                            value={overriddenStatus}
+                            onChange={(event) =>
+                              setOverriddenStatus(
+                                event.target.value as "COMPLIANT" | "NON_COMPLIANT",
+                              )
+                            }
+                            className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white text-slate-800"
+                          >
+                            <option value="COMPLIANT">COMPLIANT</option>
+                            <option value="NON_COMPLIANT">NON_COMPLIANT</option>
+                          </select>
+                        </div>
+                      )}
+
+                      <div>
+                        <label className="font-semibold text-slate-700 block mb-1.5">
+                          Officer Notes &amp; Justification
+                        </label>
+                        <textarea
+                          rows={3}
+                          value={officerNotes}
+                          onChange={(e) => setOfficerNotes(e.target.value)}
+                          placeholder="Inspection observations and statutory rationale recorded in the audit trail..."
+                          className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#12304A] bg-white text-slate-800"
+                        />
+                      </div>
+
+                      {reviewMessage && (
+                        <div className="p-3 bg-slate-100 border border-slate-200 rounded-lg text-slate-800 text-[11px] font-medium">
+                          {reviewMessage}
+                        </div>
+                      )}
+
+                      <Button
+                        type="submit"
+                        variant="primary"
+                        className="w-full"
+                        loading={isSubmittingReview}
+                      >
+                        Submit Official Determination &amp; Log Audit
+                      </Button>
+                    </form>
+                  )}
                 </CardBody>
               </Card>
             </div>

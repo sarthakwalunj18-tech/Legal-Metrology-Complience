@@ -20,65 +20,70 @@ import {
   TrendingUp,
   ArrowLeft,
 } from "lucide-react";
-import { API_BASE_URL } from "@/lib/api";
+import { ApiRequestError, apiFetch } from "@/lib/session";
 
 export default function ProductHistoryPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const [productData, setProductData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`${API_BASE_URL}/api/products/${id}/history`, {
-      headers: { authorization: "Bearer dev-inspector" },
-    })
-      .then((res) => res.json())
+    apiFetch<{ product: any; totalInspections: number; history: any[] }>(
+      `/products/${encodeURIComponent(id)}/history`,
+    )
       .then((data) => {
-        if (data.success && data.data) {
-          setProductData(data.data);
-        }
+        setProductData(data);
+        setError(null);
       })
-      .catch(() => {})
+      .catch((cause: unknown) => {
+        setProductData(null);
+        setError(
+          cause instanceof ApiRequestError ? cause.message : "Unable to reach the enforcement API.",
+        );
+      })
       .finally(() => setLoading(false));
   }, [id]);
 
-  const product = productData?.product || {
-    id,
-    name: "SunPure Kachi Ghani Mustard Oil (1L)",
-    brand: "SunPure",
-    category: "Edible Oils",
-    commodityType: "Liquid",
-    manufacturerName: "SunPure Edibles Pvt. Ltd., Plot 14, Alwar, Rajasthan",
-  };
+  if (loading) {
+    return (
+      <div className="flex min-h-screen bg-[#F8FAFC]">
+        <Sidebar />
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-center space-y-3">
+            <div className="w-8 h-8 border-3 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto" />
+            <p className="text-xs text-slate-500 font-medium">Loading product history...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
-  const inspectionHistory = productData?.history?.length > 0 ? productData.history : [
-    {
-      id: "scan-03",
-      scanNumber: "INS-2026-881921",
-      createdAt: "2026-08-26T14:30:00.000Z",
-      complianceStatus: "COMPLIANT",
-      complianceScore: "100.00",
-      reviewStatus: "ACCEPTED",
-      notes: "Packager corrected MRP tax inclusive statement and added consumer grievance email.",
-    },
-    {
-      id: "scan-02",
-      scanNumber: "INS-2026-771829",
-      createdAt: "2026-07-15T11:20:00.000Z",
-      complianceStatus: "NON_COMPLIANT",
-      complianceScore: "65.00",
-      reviewStatus: "REJECTED",
-      notes: "Flagged notice issued for missing 'Inclusive of all taxes' declaration.",
-    },
-    {
-      id: "scan-01",
-      scanNumber: "INS-2026-661738",
-      createdAt: "2026-05-10T09:45:00.000Z",
-      complianceStatus: "COMPLIANT",
-      complianceScore: "95.00",
-      reviewStatus: "ACCEPTED",
-      notes: "Baseline inspection passed.",
-    },
-  ];
+  const product = productData?.product;
+
+  if (!product) {
+    return (
+      <div className="flex min-h-screen bg-[#F8FAFC]">
+        <Sidebar />
+        <div className="flex-1 flex flex-col min-w-0">
+          <TopBar breadcrumbs={[{ label: "Products Registry", href: "/products" }, { label: "Not found" }]} />
+          <main className="p-8 max-w-6xl w-full mx-auto flex-1">
+            <div className="p-6 bg-white border border-slate-200 rounded-xl text-center space-y-3">
+              <p className="text-sm font-semibold text-slate-800">This product record is unavailable.</p>
+              <p className="text-xs text-slate-500">{error ?? "The commodity does not exist in the catalogue."}</p>
+              <Link href="/products">
+                <Button variant="secondary" size="sm" icon={<ArrowLeft className="w-4 h-4" />}>
+                  Back to catalogue
+                </Button>
+              </Link>
+            </div>
+          </main>
+        </div>
+      </div>
+    );
+  }
+
+  const inspectionHistory: any[] = productData?.history ?? [];
 
   return (
     <div className="flex min-h-screen bg-[#F8FAFC]">
@@ -139,7 +144,12 @@ export default function ProductHistoryPage({ params }: { params: Promise<{ id: s
             </h2>
 
             <div className="relative border-l-2 border-slate-200 ml-4 pl-6 space-y-6">
-              {inspectionHistory.map((scan: any, idx: number) => (
+              {inspectionHistory.length === 0 ? (
+                <p className="text-xs text-slate-500">
+                  No inspections have been recorded against this commodity yet.
+                </p>
+              ) : (
+                inspectionHistory.map((scan: any, idx: number) => (
                 <div key={scan.id || idx} className="relative">
                   {/* Timeline Dot */}
                   <div
@@ -175,8 +185,16 @@ export default function ProductHistoryPage({ params }: { params: Promise<{ id: s
                     />
                     <CardBody className="space-y-2 text-xs">
                       <div className="flex items-center justify-between">
-                        <span className="text-slate-500">Compliance Score: <strong>{scan.complianceScore || 100}%</strong></span>
-                        <span className="text-slate-500">Officer Decision: <strong className="text-slate-800">{scan.reviewStatus || "ACCEPTED"}</strong></span>
+                        <span className="text-slate-500">
+                          Compliance Score:{" "}
+                          <strong>
+                            {scan.complianceScore != null ? `${Math.round(Number(scan.complianceScore))}%` : "Not scored"}
+                          </strong>
+                        </span>
+                        <span className="text-slate-500">
+                          Officer Decision:{" "}
+                          <strong className="text-slate-800">{scan.reviewStatus ?? "NOT REVIEWED"}</strong>
+                        </span>
                       </div>
                       {scan.notes && (
                         <div className="p-2.5 bg-slate-50 border border-slate-100 rounded text-slate-600 text-[11px]">
@@ -193,7 +211,8 @@ export default function ProductHistoryPage({ params }: { params: Promise<{ id: s
                     </CardFooter>
                   </Card>
                 </div>
-              ))}
+                ))
+              )}
             </div>
           </div>
         </main>

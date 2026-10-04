@@ -19,10 +19,10 @@ import {
   ArrowRight,
   RefreshCw,
 } from "lucide-react";
-import { API_BASE_URL } from "@/lib/api";
+import { ApiRequestError, apiFetch } from "@/lib/session";
 
 const PIPELINE_STEPS = [
-  "Image uploaded and validated",
+  "Image uploaded and validated server-side",
   "Image preprocessing (EXIF normalizer, CLAHE contrast)",
   "Text extraction (High-DPI OCR)",
   "Mandatory declaration structured extraction",
@@ -30,6 +30,11 @@ const PIPELINE_STEPS = [
   "Deterministic Rule validation (Rule 6, 7, 8, 9)",
   "RAG legal grounding & compliance scoring",
 ];
+
+/** Mirrors the server-side upload limits so the user gets immediate feedback. */
+const ACCEPTED_MIME_TYPES = ["image/jpeg", "image/png"];
+const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+const MAX_FILES = 6;
 
 export default function NewInspectionPage() {
   const router = useRouter();
@@ -40,7 +45,7 @@ export default function NewInspectionPage() {
   const [productName, setProductName] = useState("");
   const [category, setCategory] = useState("Edible Oils");
   const [brand, setBrand] = useState("");
-  const [location, setLocation] = useState("Central Enforcement Zone");
+  const [location, setLocation] = useState("");
 
   // State
   const [isProcessing, setIsProcessing] = useState(false);
@@ -52,14 +57,16 @@ export default function NewInspectionPage() {
 
     if (files.length === 0) return;
 
-    const validFiles = files.filter((file) =>
-      ["image/jpeg", "image/png", "image/webp", "image/jpg"].includes(
-        file.type,
-      ),
+    const validFiles = files.filter(
+      (file) => ACCEPTED_MIME_TYPES.includes(file.type) && file.size <= MAX_UPLOAD_BYTES,
     );
 
     if (validFiles.length !== files.length) {
-      setError("Only JPG, PNG, and WebP images are allowed.");
+      setError("Only JPEG/PNG images up to 20MB each are accepted by the server.");
+    } else if (selectedFiles.length + validFiles.length > MAX_FILES) {
+      setError(`A maximum of ${MAX_FILES} images can be uploaded per inspection.`);
+      e.target.value = "";
+      return;
     } else {
       setError(null);
     }
@@ -91,21 +98,7 @@ export default function NewInspectionPage() {
       ...newFiles.map((file) => URL.createObjectURL(file)),
     ]);
 
-    if (!productName && newFiles[0]) {
-      setProductName(
-        newFiles[0].name.replace(/\.[^/.]+$/, "").replace(/[_-]/g, " "),
-      );
-    }
-
-    // Allow selecting the same file again later
     e.target.value = "";
-  };
-
-  const handleSampleFill = () => {
-    setProductName("SunPure Fortified Mustard Oil (1L)");
-    setCategory("Edible Oils");
-    setBrand("SunPure Edibles");
-    setLocation("Zonal Inspection Field Office");
   };
 
   const handleRemoveFile = (index: number) => {
@@ -135,68 +128,58 @@ export default function NewInspectionPage() {
     setCurrentStepIndex(0);
 
     try {
-      // Step 1: Prepare FormData with all package images
+      // Step 1: multipart payload; the BFF streams it to /api/scans/upload.
       const formData = new FormData();
       selectedFiles.forEach((file) => {
         formData.append("files", file);
       });
-
-      formData.append("productName", productName || "Sample Commodity");
+      formData.append("productName", productName);
       formData.append("category", category);
       formData.append("brand", brand);
       formData.append("location", location);
 
-      console.log(
-        `[FRONTEND] Uploading ${selectedFiles.length} image(s) for inspection:`,
-        selectedFiles.map((f) => f.name),
-      );
-
-      // Step 2: Upload and initialize scan
       setCurrentStepIndex(0);
-      const uploadRes = await fetch(`${API_BASE_URL}/api/scans/upload`, {
+      const upload = await apiFetch<{ scanId: string; scanNumber?: string }>("/scans/upload", {
         method: "POST",
-        headers: {
-          authorization: "Bearer dev-inspector",
-        },
-        body: formData,
+        rawBody: formData,
       });
 
-      if (!uploadRes.ok) {
-        throw new Error(`Upload failed with status ${uploadRes.status}`);
-      }
-
-      const uploadData = await uploadRes.json();
-      const scanId = uploadData.data.scanId;
-
-      // Advance visual pipeline progress
+      // The remaining steps run on the server; reflect progress locally while
+      // the analysis request is in flight.
       setCurrentStepIndex(1);
-      await new Promise((r) => setTimeout(r, 400));
-      setCurrentStepIndex(2);
 
-      // Step 3: Trigger backend analysis pipeline (OCR -> Gemini -> Rules -> DB)
-      const analyzeRes = await fetch(
-        `${API_BASE_URL}/api/inspections/${scanId}/analyze`,
-        {
-          method: "POST",
-          headers: {
-            authorization: "Bearer dev-inspector",
-          },
-        },
+      const advance = (index: number, delayMs: number) =>
+        new Promise<void>((resolve) => {
+          window.setTimeout(() => {
+            setCurrentStepIndex(index);
+            resolve();
+          }, delayMs);
+        });
+
+      void advance(2, 400);
+      void advance(3, 800);
+
+      const analysis = await apiFetch<{ analysisId?: string; status?: string }>(
+        `/inspections/${encodeURIComponent(upload.scanId)}/analyze`,
+        { method: "POST" },
       );
 
-      const analyzeJson = await analyzeRes.json();
+      setCurrentStepIndex(6);
 
-      if (!analyzeRes.ok || !analyzeJson.success) {
-        throw new Error(analyzeJson?.error?.message || "Analysis pipeline failed");
+      if (analysis.status === "FAILED") {
+        throw new Error("The analysis pipeline reported a failure.");
       }
 
-      setCurrentStepIndex(6);
-      await new Promise((r) => setTimeout(r, 300));
-
-      router.push(`/inspections/${scanId}`);
-    } catch (err: any) {
-      console.error("[FRONTEND] Inspection submission error:", err);
-      setError(err.message || "Failed to process inspection");
+      await advance(6, 300);
+      router.push(`/inspections/${upload.scanId}`);
+    } catch (cause) {
+      setError(
+        cause instanceof ApiRequestError
+          ? cause.message
+          : cause instanceof Error
+            ? cause.message
+            : "Failed to process inspection.",
+      );
       setIsProcessing(false);
       setCurrentStepIndex(-1);
     }
@@ -227,14 +210,6 @@ export default function NewInspectionPage() {
               </p>
             </div>
 
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={handleSampleFill}
-              disabled={isProcessing}
-            >
-              Load Demonstration Preset
-            </Button>
           </div>
 
           {error && (
@@ -301,7 +276,7 @@ export default function NewInspectionPage() {
                     <input
                       id="package-images"
                       type="file"
-                      accept="image/jpeg,image/png,image/webp,image/jpg"
+                      accept="image/jpeg,image/png"
                       multiple
                       onChange={handleFileChange}
                       className="hidden"
