@@ -15,7 +15,7 @@ export class ReportService {
     const scan = await DBRepo.getScan(scanId);
     if (!scan) throw new Error(`Scan ${scanId} not found`);
 
-    const product = scan.productId ? await DBRepo.getProduct(scan.productId) : null;
+    const product = scan.productId ? await DBRepo.getProduct(String(scan.productId)) : null;
     const scanViolations = await DBRepo.getScanViolations(scanId);
     const declarations = await DBRepo.getScanExtractedFields(scanId);
 
@@ -45,9 +45,9 @@ export class ReportService {
     doc.fontSize(9).fillColor("#334155");
     doc.text(`Report Number     : ${reportNumber}`);
     doc.text(`Inspection ID     : ${scan.scanNumber}`);
-    doc.text(`Inspection Date   : ${new Date(scan.createdAt).toLocaleString("en-IN")}`);
+    doc.text(`Inspection Date   : ${new Date(String(scan.createdAt)).toLocaleString("en-IN")}`);
     doc.text(`Inspection Hub    : ${scan.location || "Central Enforcement Zone"}`);
-    doc.text(`Compliance Status : ${scan.complianceStatus?.toUpperCase() || "PENDING"} (Score: ${scan.complianceScore || 0}%)`);
+    doc.text(`Compliance Status : ${String(scan.complianceStatus ?? "").toUpperCase() || "PENDING"} (Score: ${scan.complianceScore || 0}%)`);
     doc.moveDown(1);
 
     // Commodity Details
@@ -66,7 +66,7 @@ export class ReportService {
       doc.text("Declarations extraction pending or completed via automated scanner.");
     } else {
       for (const d of declarations) {
-        doc.text(`• ${d.fieldName.toUpperCase()}: ${d.fieldValue || "[NOT DETECTED / ABSENT]"} (Conf: ${((Number(d.confidence) || 0.9) * 100).toFixed(0)}%)`);
+        doc.text(`• ${String(d.fieldName).toUpperCase()}: ${d.fieldValue || "[NOT DETECTED / ABSENT]"} (Conf: ${((Number(d.confidence) || 0.9) * 100).toFixed(0)}%)`);
       }
     }
     doc.moveDown(1);

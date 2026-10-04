@@ -1,10 +1,10 @@
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
-import { env } from "../config/env.js";
+import { env, supabaseAnonKey, supabaseServiceRoleKey } from "../config/env.js";
 
 // Client for anonymous or forwarded user JWT operations
 export const supabaseClient: SupabaseClient = createClient(
   env.SUPABASE_URL,
-  env.SUPABASE_ANON_KEY,
+  supabaseAnonKey,
   {
     auth: {
       persistSession: false,
@@ -16,7 +16,7 @@ export const supabaseClient: SupabaseClient = createClient(
 // Admin client for backend operations requiring service role privileges
 export const supabaseAdmin: SupabaseClient = createClient(
   env.SUPABASE_URL,
-  env.SUPABASE_SERVICE_ROLE_KEY,
+  supabaseServiceRoleKey,
   {
     auth: {
       persistSession: false,
@@ -31,14 +31,29 @@ export interface DatabaseStatus {
   error?: string;
 }
 
+/** Fails a probe quickly instead of letting a dead endpoint stall the request. */
+async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`probe timed out after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /**
  * Validates connectivity to the Supabase endpoint.
  */
-export async function checkSupabaseConnection(): Promise<DatabaseStatus> {
+export async function checkSupabaseConnection(timeoutMs = 3000): Promise<DatabaseStatus> {
   const start = Date.now();
   try {
-    // Ping Supabase storage or auth endpoint to verify connection & credentials
-    const { error } = await supabaseAdmin.storage.listBuckets();
+    // Ping Supabase storage to verify connection & credentials.
+    const { error } = await withTimeout(supabaseAdmin.storage.listBuckets(), timeoutMs);
     const latencyMs = Date.now() - start;
 
     if (error) {

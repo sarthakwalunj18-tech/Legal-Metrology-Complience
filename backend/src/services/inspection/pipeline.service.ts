@@ -50,7 +50,7 @@ export class InspectionPipelineService {
         console.log(
           `[OCR] Processing image ${idx + 1}/${targetImages.length} (${image.imageType}): ${image.fileName}`,
         );
-        const imageBuffer = await StorageService.downloadFile(image.storagePath);
+        const imageBuffer = await StorageService.downloadFile(String(image.storagePath));
         let bufferToOcr = imageBuffer;
         if (image.imageType === "ORIGINAL" && preprocessedImages.length === 0) {
           const prep = await PreprocessService.preprocess(imageBuffer);
@@ -118,7 +118,7 @@ export class InspectionPipelineService {
 
     // 6. Update Product Category in DB
     if (scan.productId) {
-      await DBRepo.updateProduct(scan.productId, {
+      await DBRepo.updateProduct(String(scan.productId), {
         category: classification.category,
         commodityType: classification.commodityType,
       });
@@ -208,8 +208,8 @@ export class InspectionPipelineService {
     );
 
     return {
-      scanId: scan.id,
-      scanNumber: scan.scanNumber,
+      scanId: String(scan.id),
+      scanNumber: String(scan.scanNumber ?? scanId),
       ...decision,
     };
   }

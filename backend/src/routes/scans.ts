@@ -1,357 +1,338 @@
 import { FastifyInstance, FastifyPluginAsync } from "fastify";
-import { authenticate } from "../middleware/auth.js";
+import {
+  assertScanAccess,
+  authenticate,
+  requirePermission,
+  requireAuthenticatedUser,
+} from "../middleware/auth.js";
+import { expensiveAiRateLimit, standardRateLimit } from "../middleware/rate-limit.js";
 import { StorageService } from "../services/storage.service.js";
 import { PreprocessService } from "../services/preprocess.service.js";
 import { DBRepo } from "../db/repo.js";
 import { OcrService } from "../services/ocr/ocr.service.js";
+import { validateImageUpload } from "../services/upload.validation.js";
+import { env } from "../config/env.js";
+import { ValidationError, NotFoundError } from "../lib/errors.js";
+import { logger } from "../lib/logger.js";
 
-export const scanRoutes: FastifyPluginAsync = async (
-  fastify: FastifyInstance,
-) => {
-  // 1. Upload Product Package Image & Initialize Inspection
+interface UploadedPart {
+  buffer: Buffer;
+  fileName: string;
+  mimeType: string;
+  format: string;
+}
+
+/** Trimmed text fields posted alongside the multipart files. */
+interface UploadFields {
+  productName: string;
+  category: string;
+  brand: string;
+  location: string;
+}
+
+export const scanRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
+  // 1. Upload package photographs and register the inspection.
   fastify.post(
     "/scans/upload",
-    { preHandler: [authenticate] },
+    { preHandler: [authenticate, requirePermission("SCAN_CREATE"), expensiveAiRateLimit] },
     async (request, reply) => {
-      const files: {
-        buffer: Buffer;
-        filename: string;
-        mimetype: string;
-      }[] = [];
+      const user = requireAuthenticatedUser(request);
 
-      let productName = "Unlabeled Commodity Sample";
-      let category = "Packaged Food";
-      let brand = "";
-      let location = "Inspection Field Office";
+      const uploaded: UploadedPart[] = [];
+      const fields: UploadFields = {
+        productName: "",
+        category: "",
+        brand: "",
+        location: "",
+      };
 
       const parts = request.parts({
         limits: {
-          fileSize: 20 * 1024 * 1024,
-          files: 10,
+          fileSize: env.UPLOAD_MAX_BYTES,
+          files: env.UPLOAD_MAX_FILES,
         },
       });
 
       for await (const part of parts) {
         if (part.type === "file") {
-          const allowedMimeTypes = [
-            "image/jpeg",
-            "image/png",
-            "image/webp",
-            "image/jpg",
-          ];
-
-          if (!allowedMimeTypes.includes(part.mimetype)) {
-            return reply.status(400).send({
-              success: false,
-              error: {
-                code: "INVALID_FILE_TYPE",
-                message: `Unsupported file format: ${part.mimetype}`,
-              },
-            });
-          }
-
           const buffer = await part.toBuffer();
 
-          files.push({
-            buffer,
-            filename: part.filename || `package_${files.length + 1}.jpg`,
-            mimetype: part.mimetype,
+          // Trust the bytes, never the browser supplied Content-Type.
+          const validated = await validateImageUpload(buffer, {
+            declaredMimeType: part.mimetype,
+            declaredFileName: part.filename,
+            maxBytes: env.UPLOAD_MAX_BYTES,
           });
-        } else {
-          const value = part.value;
 
-          if (part.fieldname === "productName") {
-            productName = String(value);
-          }
-
-          if (part.fieldname === "category") {
-            category = String(value);
-          }
-
-          if (part.fieldname === "brand") {
-            brand = String(value);
-          }
-
-          if (part.fieldname === "location") {
-            location = String(value);
-          }
+          uploaded.push({
+            buffer: validated.buffer,
+            fileName: validated.fileName,
+            mimeType: validated.mimeType,
+            format: validated.format,
+          });
+          continue;
         }
+
+        const value = String(part.value ?? "").trim().slice(0, 200);
+        if (part.fieldname === "productName") fields.productName = value;
+        if (part.fieldname === "category") fields.category = value;
+        if (part.fieldname === "brand") fields.brand = value;
+        if (part.fieldname === "location") fields.location = value;
       }
 
-      console.log(
-        `[UPLOAD] Received ${files.length} files:`,
-        files.map((file) => file.filename),
-      );
-
-      if (files.length === 0) {
-        return reply.status(400).send({
-          success: false,
-          error: {
-            code: "FILE_MISSING",
-            message: "At least one package image is required.",
-          },
-        });
+      if (uploaded.length === 0) {
+        throw new ValidationError("At least one package photograph is required.");
       }
 
-      // Continue with product + scan creation...
+      if (!fields.productName) {
+        throw new ValidationError("A product name is required to register the inspection.");
+      }
 
       const createdProduct = await DBRepo.insertProduct({
-        name: productName,
-        brand,
-        category,
+        name: fields.productName,
+        brand: fields.brand,
+        category: fields.category || "Packaged Commodity",
         commodityType: "Solid/Liquid",
       });
 
-      const scanNumber = `INS-${new Date().getFullYear()}-${Math.floor(
-        100000 + Math.random() * 900000,
-      )}`;
-
-      let inspectorId: string | undefined;
-
-      if (request.user?.email) {
-        const dbUser = await DBRepo.getUserByEmail(request.user.email);
-
-        if (dbUser) {
-          inspectorId = dbUser.id;
-        }
-      }
+      // Sequential, collision-checked registration number (never random).
+      const scanNumber = await DBRepo.getNextScanNumber();
 
       const createdScan = await DBRepo.insertScan({
         productId: createdProduct.id,
-        inspectorId,
+        inspectorId: user.provisioned ? user.id : undefined,
         scanNumber,
-        location,
+        location: fields.location,
         status: "PROCESSING",
         complianceStatus: "REQUIRES_REVIEW",
         complianceScore: "0.00",
       });
 
-      console.log(
-        `[UPLOAD] Received ${files.length} package image(s) for product '${productName}'`
-      );
+      const scanId = String(createdScan.id);
 
       const storedImagePairs = await Promise.all(
-        files.map(async (file, idx) => {
-          // 1. Store original uploaded image
-          console.log(`[STORAGE] Uploading original package image ${idx + 1}/${files.length}: ${file.filename}`);
-          const origUpload = await StorageService.uploadFile(
+        uploaded.map(async (file, idx) => {
+          const original = await StorageService.uploadFile(
             file.buffer,
-            `orig_${idx + 1}_${file.filename}`,
-            file.mimetype,
+            `orig_${idx + 1}_${file.fileName}`,
+            file.mimeType,
             "scans/original",
           );
 
-          const origRecord = await DBRepo.insertImage({
-            scanId: createdScan.id,
+          const originalRecord = await DBRepo.insertImage({
+            scanId,
             imageType: "ORIGINAL",
-            storagePath: origUpload.storagePath,
-            fileName: file.filename,
-            contentType: file.mimetype,
+            storagePath: original.storagePath,
+            fileName: file.fileName,
+            contentType: file.mimeType,
             fileSizeBytes: file.buffer.length,
           });
 
-          // 2. Create and store preprocessed image derivative
-          console.log(`[PREPROCESS] Preprocessing image ${idx + 1}/${files.length}: ${file.filename}`);
-          const preprocessResult = await PreprocessService.preprocess(file.buffer);
-
-          const prepUpload = await StorageService.uploadFile(
-            preprocessResult.processedBuffer,
-            `prep_${idx + 1}_${file.filename}.jpg`,
+          // Preprocessed derivative keeps OCR accuracy high on poor lighting.
+          const preprocessed = await PreprocessService.preprocess(file.buffer);
+          const preprocessedUpload = await StorageService.uploadFile(
+            preprocessed.processedBuffer,
+            `prep_${idx + 1}_${file.fileName}.jpg`,
             "image/jpeg",
             "scans/preprocessed",
           );
 
-          const prepRecord = await DBRepo.insertImage({
-            scanId: createdScan.id,
+          const preprocessedRecord = await DBRepo.insertImage({
+            scanId,
             imageType: "PREPROCESSED",
-            storagePath: prepUpload.storagePath,
-            fileName: `preprocessed_${file.filename}`,
+            storagePath: preprocessedUpload.storagePath,
+            fileName: `preprocessed_${file.fileName}`,
             contentType: "image/jpeg",
-            fileSizeBytes: preprocessResult.processedBuffer.length,
-            width: preprocessResult.width,
-            height: preprocessResult.height,
+            fileSizeBytes: preprocessed.processedBuffer.length,
+            width: preprocessed.width,
+            height: preprocessed.height,
           });
 
-          return [origRecord, prepRecord];
+          return [originalRecord, preprocessedRecord];
         }),
       );
 
       const storedImages = storedImagePairs.flat();
-      console.log(`[STORAGE] Stored ${storedImages.length} total image records (${files.length} ORIGINAL + ${files.length} PREPROCESSED)`);
+
+      await DBRepo.insertAuditLog({
+        userId: user.provisioned ? user.id : undefined,
+        userEmail: user.email,
+        action: "SCAN_UPLOADED",
+        resourceType: "SCAN",
+        resourceId: scanId,
+        details: {
+          scanNumber,
+          imageCount: uploaded.length,
+          formats: uploaded.map((file) => file.format),
+        },
+      });
+
+      logger.info("Inspection registered", {
+        requestId: request.id,
+        scanId,
+        scanNumber,
+        imageCount: uploaded.length,
+        userId: user.id,
+      });
 
       return reply.status(201).send({
         success: true,
         data: {
-          scanId: createdScan.id,
-          scanNumber: createdScan.scanNumber,
+          scanId,
+          scanNumber,
           productId: createdProduct.id,
           images: storedImages,
         },
       });
-    },
+    }
   );
 
-  // 2. Get Scan by ID
+  // 2. Single inspection with evidence, extraction, checks and violations.
   fastify.get(
     "/scans/:id",
-    { preHandler: [authenticate] },
+    { preHandler: [authenticate, requirePermission("SCAN_VIEW"), standardRateLimit] },
     async (request, reply) => {
+      const user = requireAuthenticatedUser(request);
       const { id } = request.params as { id: string };
 
       const scan = await DBRepo.getScan(id);
-      if (!scan) {
-        return reply.status(404).send({
-          success: false,
-          error: {
-            code: "SCAN_NOT_FOUND",
-            message: `Scan with ID '${id}' does not exist.`,
-          },
-        });
-      }
+      assertScanAccess(user, {
+        id,
+        inspectorId: scan?.inspectorId as string | undefined,
+        department: await resolveOwnerDepartment(user, scan?.inspectorId as string | undefined),
+      });
+      if (!scan) throw new NotFoundError("Inspection record", id);
 
-      const scanImages = await DBRepo.getScanImages(scan.id);
+      const scanId = String(scan.id);
+      const [scanImages, extractedFields, complianceChecks, violations] = await Promise.all([
+        DBRepo.getScanImages(scanId),
+        DBRepo.getScanExtractedFields(scanId),
+        DBRepo.getScanComplianceChecks(scanId),
+        DBRepo.getScanViolations(scanId),
+      ]);
 
       const imagesWithUrls = await Promise.all(
-        scanImages.map(async (image: any) => ({
+        scanImages.map(async (image) => ({
           ...image,
           url: await StorageService.getSignedUrl(
-            image.storagePath,
-            image.contentType,
+            String(image.storagePath),
+            (image.contentType as string) ?? "image/jpeg",
           ),
         })),
       );
-      const extractedFields = await DBRepo.getScanExtractedFields(scan.id);
-      const complianceChecks = await DBRepo.getScanComplianceChecks(scan.id);
-      const violations = await DBRepo.getScanViolations(scan.id);
 
       return reply.status(200).send({
         success: true,
         data: {
           scan,
           images: imagesWithUrls,
-          analysis: scan.analysis || null,
+          analysis: (scan.analysis as unknown) ?? null,
           extractedFields,
           complianceChecks,
           violations,
         },
       });
-    },
+    }
   );
 
-  // 3. List Recent Scans
+  // 3. Paginated inspection registry. Inspectors are scoped to their own records.
   fastify.get(
     "/scans",
-    { preHandler: [authenticate] },
+    { preHandler: [authenticate, requirePermission("SCAN_VIEW"), standardRateLimit] },
     async (request, reply) => {
-      const scanList = await DBRepo.getAllScans();
+      const user = requireAuthenticatedUser(request);
+      const query = request.query as Record<string, string | undefined>;
+
+      const page = await DBRepo.getScansPage({
+        page: toPositiveInt(query.page),
+        pageSize: toPositiveInt(query.pageSize),
+        search: query.search,
+        complianceStatus: query.complianceStatus,
+        reviewStatus: query.reviewStatus,
+        status: query.status,
+        severity: query.severity,
+        productId: query.productId,
+        location: query.location,
+        fromDate: query.fromDate,
+        toDate: query.toDate,
+        sort: query.sort as "newest" | "oldest" | "score_asc" | "score_desc" | undefined,
+        inspectorId: user.role === "INSPECTOR" ? user.id : query.inspectorId,
+      });
 
       return reply.status(200).send({
         success: true,
         data: {
-          scans: scanList,
-          count: scanList.length,
+          scans: page.items,
+          total: page.total,
+          page: page.page,
+          pageSize: page.pageSize,
+          pageCount: page.pageCount,
+          hasNext: page.hasNext,
+          hasPrevious: page.hasPrevious,
         },
       });
-    },
+    }
   );
 
-  // 4. Execute & Retrieve OCR for Scan (Module 5)
+  // 4. Re-run OCR for a single inspection (diagnostic / re-processing aid).
   fastify.post(
     "/scans/:id/ocr",
-    { preHandler: [authenticate] },
+    { preHandler: [authenticate, requirePermission("INSPECTION_ANALYZE"), expensiveAiRateLimit] },
     async (request, reply) => {
+      const user = requireAuthenticatedUser(request);
       const { id } = request.params as { id: string };
 
       const scan = await DBRepo.getScan(id);
-      if (!scan) {
-        return reply.status(404).send({
-          success: false,
-          error: {
-            code: "SCAN_NOT_FOUND",
-            message: `Scan with ID '${id}' does not exist.`,
-          },
-        });
-      }
+      assertScanAccess(user, {
+        id,
+        inspectorId: scan?.inspectorId as string | undefined,
+        department: await resolveOwnerDepartment(user, scan?.inspectorId as string | undefined),
+      });
+      if (!scan) throw new NotFoundError("Inspection record", id);
 
-      const scanImages = await DBRepo.getScanImages(scan.id);
-
-      const targetImage =
-        scanImages.find((img) => img.imageType === "PREPROCESSED") ||
-        scanImages[0];
-
-      // Read image buffer from storage or create placeholder buffer
-
-      const processedImages = scanImages.filter(
-        (img) => img.imageType === "PREPROCESSED",
-      );
-
-      const targetImages =
-        processedImages.length > 0
-          ? processedImages
-          : scanImages.filter((img) => img.imageType === "ORIGINAL");
+      const scanId = String(scan.id);
+      const scanImages = await DBRepo.getScanImages(scanId);
+      const preprocessed = scanImages.filter((image) => image.imageType === "PREPROCESSED");
+      const targetImages = preprocessed.length > 0 ? preprocessed : scanImages.filter((image) => image.imageType === "ORIGINAL");
 
       if (targetImages.length === 0) {
-        return reply.status(400).send({
-          success: false,
-          error: {
-            code: "NO_IMAGES",
-            message: "No package images found for this scan.",
-          },
-        });
+        throw new ValidationError("No package images found for this inspection.");
       }
 
-      console.log(`[OCR] Running concurrent OCR on ${targetImages.length} package image(s) for scan ${scan.id}`);
       const ocrResults = await Promise.all(
-        targetImages.map(async (image, idx) => {
-          console.log(`[OCR] Extracting text from image ${idx + 1}/${targetImages.length} (${image.imageType})`);
-          const imageBuffer = await StorageService.downloadFile(image.storagePath);
+        targetImages.map(async (image) => {
+          const imageBuffer = await StorageService.downloadFile(String(image.storagePath));
           return OcrService.extract(imageBuffer);
         }),
       );
 
       const combinedText = ocrResults
-        .map(
-          (result, index) =>
-            `--- PACKAGE IMAGE ${index + 1} ---\n${result.rawText}`,
-        )
+        .map((result, index) => `--- PACKAGE IMAGE ${index + 1} ---\n${result.rawText}`)
         .join("\n\n");
 
       return reply.status(200).send({
         success: true,
         data: {
-          scanId: scan.id,
-          ocr: {
-            rawText: combinedText,
-            results: ocrResults,
-          },
+          scanId,
+          ocr: { rawText: combinedText, results: ocrResults },
         },
       });
-
-      // let imageBuffer: Buffer = Buffer.from("packaged_commodity_sample_image");
-      // if (targetImage && targetImage.storagePath) {
-      //   if (targetImage.storagePath.startsWith("local://")) {
-      //     const localPath = targetImage.storagePath.replace("local://", "");
-      //     try {
-      //       const fs = await import("fs/promises");
-      //       const path = await import("path");
-      //       imageBuffer = await fs.readFile(
-      //         path.resolve(process.cwd(), "uploads", localPath),
-      //       );
-      //     } catch {}
-      //   }
-      // }
-
-      // // Execute OCR extraction
-      // const { OcrService } = await import("../services/ocr/ocr.service.js");
-      // const ocrResult = await OcrService.extract(imageBuffer);
-
-      // return reply.status(200).send({
-      //   success: true,
-      //   data: {
-      //     scanId: scan.id,
-      //     ocr: ocrResult,
-      //   },
-      // });
-    },
+    }
   );
 };
+
+function toPositiveInt(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+/**
+ * Supervisors are scoped by department, which lives on the officer record rather
+ * than on the inspection, so it has to be resolved before the access check.
+ */
+async function resolveOwnerDepartment(user: { role: string }, inspectorId?: string): Promise<string | undefined> {
+  if (user.role !== "SUPERVISOR" || !inspectorId) return undefined;
+  const owner = await DBRepo.getUserById(inspectorId);
+  return owner?.department ?? undefined;
+}

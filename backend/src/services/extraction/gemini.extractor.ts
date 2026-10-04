@@ -1,4 +1,4 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { OcrResult } from "../ocr/ocr.interface.js";
 import {
   structuredDeclarationsSchema,
@@ -205,10 +205,6 @@ Return ONLY the JSON object.
 `;
 
 export class GeminiExtractor {
-  private static ai: GoogleGenAI | null = process.env.GEMINI_API_KEY
-    ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY })
-    : null;
-
   /**
    * Extracts structured legal declarations from OCR output using Gemini with Zod validation.
    */
@@ -216,21 +212,11 @@ export class GeminiExtractor {
     ocrResult: OcrResult,
   ): Promise<StructuredDeclarations> {
     const ocrText = ocrResult.rawText;
+    const apiKey = process.env.GEMINI_API_KEY;
 
     // 1. If Gemini API key is available, attempt Gemini model with fast timeout
-    if (this.ai && process.env.GEMINI_API_KEY) {
+    if (apiKey) {
       try {
-        //         const prompt = `
-        // OCR TEXT FROM PRODUCT PACKAGE:
-        // """
-        // ${ocrText}
-        // """
-
-        // Extract all packaged commodity declarations according to Legal Metrology Rules, 2011.
-        // Output strictly valid JSON with keys:
-        // generic_name, manufacturer, packer, importer, net_quantity, mrp, date_of_manufacture, consumer_care, country_of_origin, other_declarations.
-        // `;
-
         const prompt = `
 OCR TEXT FROM PRODUCT PACKAGE:
 
@@ -244,15 +230,17 @@ Follow the exact JSON structure and extraction rules provided in the system inst
 `;
         const modelName = process.env.GEMINI_MODEL || "gemini-3.7-flash";
         console.log(`[GEMINI] Calling model '${modelName}' for declaration extraction`);
-        const callPromise = this.ai.models.generateContent({
+        
+        const genAI = new GoogleGenerativeAI(apiKey);
+        const model = genAI.getGenerativeModel({
           model: modelName,
-          contents: prompt,
-          config: {
-            systemInstruction: EXTRACTION_SYSTEM_PROMPT,
+          systemInstruction: EXTRACTION_SYSTEM_PROMPT,
+          generationConfig: {
             responseMimeType: "application/json",
           },
         });
 
+        const callPromise = model.generateContent(prompt);
         const timeoutMs = Number(process.env.GEMINI_TIMEOUT_MS || 25000);
 
         const timeoutPromise = new Promise((_, reject) =>
@@ -263,7 +251,8 @@ Follow the exact JSON structure and extraction rules provided in the system inst
           ),
         );
 
-        const response: any = await Promise.race([callPromise, timeoutPromise]);
+        const result: any = await Promise.race([callPromise, timeoutPromise]);
+        const response = result.response;
 
         let rawJsonText =
           typeof response.text === "function"
