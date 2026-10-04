@@ -12,11 +12,12 @@ verified, and what is still open. Updated as work completes.
 | Backend typecheck | `npx tsc --noEmit` (in `backend`) | **Pass** — 0 errors |
 | Frontend typecheck | `npm run typecheck` (in `frontend`) | **Pass** — 0 errors |
 | Frontend lint | `npm run lint` (in `frontend`) | **Pass** — 0 errors, 76 warnings |
-| Frontend production build | `npm run build` (in `frontend`) | **Pass** — 18 routes compiled |
+| Frontend production build | `npm run build` (in `frontend`) | **Pass** — 19 routes compiled |
 | Backend module E2E | `npm test` (in `backend`) | **Pass** — Modules 0–17 green, including the signed-media check. Step 8 fetches the signed report URL over HTTP, so this one needs a backend listening on `PORT` |
 | BFF / session integration | `npx tsx src/scripts/test-bff.ts` (in `backend`) | **Pass** — 37 checks, requires a prior frontend build |
 | Review & search authorisation | `npm run test:review` (in `backend`) | **Pass** — 34 checks |
-| Whole regression suite | `npm run test:all` (in `backend`) | **Pass** — E2E + BFF + auth + review/search |
+| Assistant grounding | `npm run test:assistant` (in `backend`) | **Pass** — 18 checks |
+| Whole regression suite | `npm run test:all` (in `backend`) | **Pass** — E2E + BFF + auth + review/search + assistant |
 | Module regression suite | `test-rag`, `test-rules`, `test-rule-engine`, `test-decision-engine`, `test-dashboard`, `test-product-history`, `test-report`, `test-violation-e2e` | **All pass** |
 
 The BFF test boots the real Fastify backend (`src/server.ts`) and the real Next.js
@@ -187,6 +188,29 @@ flow over HTTP. Run `npm run build` in `frontend` before running it.
 - The empty-query response now returns the same keys as a populated one (`inspections`,
   not `scans`) plus a `scope` label, so clients never special-case it.
 
+### Statutory assistant (`/assistant`)
+- Officer-facing Q&A over the Legal Metrology Act and the Packaged Commodities Rules
+  (`POST /api/rag/ask`), with topic selection, starter questions and the statutory text
+  behind every answer shown inline.
+- The narrative answer may only restate retrieved statutory chunks. Three guarantees are
+  enforced in code, not just in the prompt:
+  - **No grounding, no answer.** Retrieval that says nothing about the question yields
+    `refusal: NO_GROUNDING` and no prose at all.
+  - **Citations cannot be invented.** Citations are the chunks actually retrieved, and
+    any the model did not reference are dropped, so the UI cannot show a rule as
+    supporting an answer the model never used.
+  - **A model failure is not a licence to invent.** With no `GEMINI_API_KEY`, or if the
+    call fails, the response is retrieval-only (`NO_MODEL`) — the officer gets the source
+    material instead of a plausible invention.
+- Grounding is decided **lexically**, not by vector score: the in-memory index returns
+  its top-K for any input, and an unrelated question scored as highly as a real one
+  (22% vs 17%), so a similarity threshold would have been arbitrary. The officer's
+  content words must actually appear in the retrieved statutory text.
+- The persistent banner states that this is assistance, not a determination — the rules
+  engine decides and an officer signs off.
+- Every query is written to the audit log (`RAG_ASSISTANCE_REQUESTED`) with whether the
+  system could ground it and which rules it cited.
+
 ### Stale module tests brought back to green
 `test-rules`, `test-rag`, `test-dashboard`, `test-product-history` and `test-e2e` all
 predated the auth/permission/scoping work and were failing on 401/403. Each now
@@ -214,10 +238,16 @@ None currently known. Every check in the table above is green.
   `no-explicit-any` warnings.
 - Confirm report/media URL topology for a deployed BFF (`PUBLIC_API_URL` vs. the
   proxied media path).
+- Notifications are still a placeholder bell in the top bar with no feed behind it.
+- The in-memory RAG index returns its top-K for *any* query, including unrelated ones.
+  The assistant gates on lexical grounding, but `RagLegalService` itself still hands weak
+  matches to the inspection detail view's citations. A relevance floor, or better
+  embeddings for the in-memory path, would improve those citations.
 - Live verification against real Supabase/PostgreSQL/Gemini/OCR/RAG services —
-  currently blocked on credentials. Silent refresh in particular has been exercised
-  against the negative path only, because demo identities carry no Supabase refresh
-  token.
+  currently blocked on credentials. The assistant's generated-answer path and silent
+  refresh are therefore exercised against their fallback branches only: no
+  `GEMINI_API_KEY` means `NO_MODEL` retrieval-only responses, and demo identities carry
+  no Supabase refresh token.
 - Deferred by design: geographic mapping (locations are free text without usable
   coordinates), and durable background jobs (analysis is currently request-bound with a
   timeout).

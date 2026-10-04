@@ -20,6 +20,7 @@ import {
   Loader2,
   ClipboardCheck,
   ShieldAlert,
+  Sparkles,
 } from "lucide-react";
 
 interface NavItem {
@@ -70,6 +71,12 @@ export function Sidebar() {
       permission: "ANALYTICS_VIEW",
     },
     { label: "Rule Knowledge Base", href: "/rules", icon: BookOpen, permission: "RULE_VIEW" },
+    {
+      label: "Statutory Assistant",
+      href: "/assistant",
+      icon: Sparkles,
+      permission: "RULE_VIEW",
+    },
   ];
 
   const adminNav: NavItem[] = [
