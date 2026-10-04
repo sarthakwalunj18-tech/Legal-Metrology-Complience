@@ -58,6 +58,7 @@ async function runRulesKnowledgeBaseTest() {
   const listRes = await app.inject({
     method: "GET",
     url: "/api/rules",
+    headers: { authorization: "Bearer dev-inspector" },
   });
   console.log(`   [GET /api/rules] Status: ${listRes.statusCode}`);
   const listJson = listRes.json();
@@ -66,10 +67,18 @@ async function runRulesKnowledgeBaseTest() {
   }
   console.log(`   ✓ API returned ${listJson.data.rules.length} official rules.`);
 
+  // Unauthenticated reads must be refused: the statutory library is not public.
+  const anonRes = await app.inject({ method: "GET", url: "/api/rules" });
+  console.log(`   [GET /api/rules anonymous] Status: ${anonRes.statusCode}`);
+  if (anonRes.statusCode !== 401) {
+    throw new Error(`Anonymous rule listing was not refused (status ${anonRes.statusCode}).`);
+  }
+
   // Single Rule Endpoint
   const singleRes = await app.inject({
     method: "GET",
     url: "/api/rules/RULE-6-1-C-NET-QUANTITY",
+    headers: { authorization: "Bearer dev-inspector" },
   });
   console.log(`   [GET /api/rules/RULE-6-1-C-NET-QUANTITY] Status: ${singleRes.statusCode}`);
   const singleJson = singleRes.json();

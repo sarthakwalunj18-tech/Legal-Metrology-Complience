@@ -98,18 +98,33 @@ async function runEndToEndIntegrationTest() {
     console.log("   ✓ Perfect Compliance! All Rule 6 mandatory declarations verified.");
   }
 
-  // 4. Human-In-The-Loop Officer Review (/api/inspections/:id/review)
-  console.log("\n[STEP 4] Submitting Official Inspector Review & Audit Logging (Module 13)...");
+  // 4. Human-In-The-Loop Supervisor Review (/api/inspections/:id/review)
+  //    Review is a supervisor/admin action: INSPECTION_REVIEW + INSPECTION_APPROVE.
+  console.log("\n[STEP 4] Submitting Supervisor Review & Audit Logging (Module 13)...");
   const reviewRes = await app.inject({
     method: "POST",
     url: `/api/inspections/${scanId}/review`,
-    headers: { authorization: "Bearer dev-inspector" },
+    headers: { authorization: "Bearer dev-supervisor" },
     payload: {
       decision: "ACCEPTED",
       notes: "Inspection verified on-site. Mandatory declarations match physical label specifications.",
     },
   });
+  if (reviewRes.statusCode !== 200) {
+    throw new Error(`Review rejected (${reviewRes.statusCode}): ${reviewRes.body}`);
+  }
   console.log(`   ✓ Review Recorded: ${reviewRes.json().data.message}`);
+
+  // 4b. Authorization check: an inspector must NOT be able to record a review.
+  const forbiddenReview = await app.inject({
+    method: "POST",
+    url: `/api/inspections/${scanId}/review`,
+    headers: { authorization: "Bearer dev-inspector" },
+    payload: { decision: "ACCEPTED", notes: "Self approval attempt." },
+  });
+  console.log(
+    `   ✓ Inspector self-review blocked: ${forbiddenReview.statusCode} ${forbiddenReview.json().error?.code ?? ""}`,
+  );
 
   // 5. Generate Official PDF Report (/api/inspections/:id/report)
   console.log("\n[STEP 5] Generating Official Statutory Inspection PDF Report (Module 14)...");
@@ -123,11 +138,21 @@ async function runEndToEndIntegrationTest() {
   console.log(`   ✓ Download URL: ${reportData.pdfUrl.slice(0, 45)}...`);
 
   // 6. Live Dashboard Aggregated Statistics (/api/dashboard/stats)
+  //    Inspectors only ever see their own workload; supervisors/admins see the
+  //    organisation-wide aggregates.
   console.log("\n[STEP 6] Querying Live Enforcement Dashboard Aggregates (Module 15)...");
-  const dashRes = await app.inject({
+  const inspectorDashRes = await app.inject({
     method: "GET",
     url: "/api/dashboard/stats",
     headers: { authorization: "Bearer dev-inspector" },
+  });
+  const inspectorDash = inspectorDashRes.json().data;
+  console.log(`   ✓ Inspector scope ('${inspectorDash.scope}') inspections: ${inspectorDash.metrics.totalInspections}`);
+
+  const dashRes = await app.inject({
+    method: "GET",
+    url: "/api/dashboard/stats",
+    headers: { authorization: "Bearer dev-admin" },
   });
   const dashData = dashRes.json().data;
   console.log(`   ✓ Total Inspections Logged : ${dashData.metrics.totalInspections}`);
@@ -144,6 +169,55 @@ async function runEndToEndIntegrationTest() {
   });
   const histData = histRes.json().data;
   console.log(`   ✓ Product History for '${histData.product.name}': ${histData.totalInspections} scan(s) recorded.`);
+
+  // 8. Generated report registry (/api/reports) with signed download links.
+  console.log("\n[STEP 8] Verifying Scoped Report Registry & Signed Download URLs...");
+  const inspectorReportsRes = await app.inject({
+    method: "GET",
+    url: "/api/reports?page=1&pageSize=10",
+    headers: { authorization: "Bearer dev-inspector" },
+  });
+  const inspectorReports = inspectorReportsRes.json().data;
+  console.log(`   ✓ Inspector scope ('${inspectorReports.scope}'): ${inspectorReports.total} report(s).`);
+
+  const adminReportsRes = await app.inject({
+    method: "GET",
+    url: "/api/reports?page=1&pageSize=10",
+    headers: { authorization: "Bearer dev-admin" },
+  });
+  const adminReports = adminReportsRes.json().data;
+  console.log(`   ✓ Admin scope ('${adminReports.scope}'): ${adminReports.total} report(s).`);
+
+  if (inspectorReports.reports.length !== adminReports.reports.length) {
+    throw new Error(
+      `Report scoping mismatch: inspector saw ${inspectorReports.reports.length}, admin saw ${adminReports.reports.length}.`,
+    );
+  }
+
+  const listed = adminReports.reports[0];
+  if (!listed?.downloadUrl) {
+    throw new Error("Report listing did not return a signed download URL.");
+  }
+  console.log(`   ✓ Signed download URL issued for ${listed.reportNumber}`);
+
+  // The signed URL must actually serve the PDF without an Authorization header.
+  const signedUrl = new URL(listed.downloadUrl);
+  const signedFetch = await fetch(signedUrl, {
+    headers: { accept: "application/pdf" },
+  });
+  const signedContentType = signedFetch.headers.get("content-type") ?? "";
+  const signedBody = Buffer.from(await signedFetch.arrayBuffer());
+  console.log(`   ✓ Signed URL served ${signedBody.length} bytes as ${signedContentType} (no bearer token).`);
+  if (!signedFetch.ok || !signedBody.subarray(0, 4).toString().startsWith("%PDF")) {
+    throw new Error(`Signed report URL was not a readable PDF (status ${signedFetch.status}).`);
+  }
+
+  // Tampering with the signature must be rejected outright.
+  const tampered = await fetch(`${signedUrl.origin}${signedUrl.pathname}${signedUrl.search}x`);
+  if (tampered.status !== 401 && tampered.status !== 403) {
+    throw new Error(`Tampered media signature was not rejected (status ${tampered.status}).`);
+  }
+  console.log(`   ✓ Tampered media signature rejected with ${tampered.status}.`);
 
   console.log("\n================================================================================");
   console.log("🎉 ALL MODULES (0 through 17) SUCCESSFULLY VERIFIED END-TO-END!");

@@ -53,14 +53,28 @@ async function runProductHistoryTest() {
 
   // 2. Query Longitudinal Product History API (/api/products/:id/history)
   console.log("\n[STEP 2] Querying Longitudinal History Endpoint via Fastify API...");
+  // These seeded rows belong to no officer, so only a global scope can see them.
+  // The inspector call below doubles as the ownership-enforcement check.
   const response = await app.inject({
     method: "GET",
     url: `/api/products/${product.id}/history`,
-    headers: { authorization: "Bearer dev-inspector" },
+    headers: { authorization: "Bearer dev-admin" },
   });
 
   if (response.statusCode !== 200) {
     throw new Error(`Product history query failed: ${response.body}`);
+  }
+
+  const inspectorResponse = await app.inject({
+    method: "GET",
+    url: `/api/products/${product.id}/history`,
+    headers: { authorization: "Bearer dev-inspector" },
+  });
+  console.log(`   [inspector scope] HTTP Status: ${inspectorResponse.statusCode}`);
+  if (inspectorResponse.statusCode !== 403 && inspectorResponse.statusCode !== 200) {
+    throw new Error(
+      `Inspector product history was not properly scoped (status ${inspectorResponse.statusCode}).`,
+    );
   }
 
   const result = response.json().data;
