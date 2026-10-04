@@ -4,20 +4,23 @@ import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { TopBar } from "@/components/layout/TopBar";
-import { Card, CardHeader, CardBody } from "@/components/ui/Card";
+import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
-import { Package, Search, History, Eye, Building2, CheckCircle2, AlertOctagon } from "lucide-react";
+import { Search, History } from "lucide-react";
 import { ApiRequestError, apiFetch } from "@/lib/session";
 
+import type { Product } from "@/lib/domain";
+
 interface ProductListPayload {
-  products: any[];
+  products: Product[];
   total: number;
   page: number;
-  pageCount: number;
+  pageSize?: number;
+  pageCount?: number;
 }
 
 export default function ProductsListPage() {
-  const [products, setProducts] = useState<any[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
   const [total, setTotal] = useState(0);
   const [searchTerm, setSearchTerm] = useState("");
   const [loading, setLoading] = useState(true);
@@ -123,7 +126,7 @@ export default function ProductsListPage() {
                         </td>
                         <td className="px-6 py-3.5 text-center">
                           <span className="font-mono font-bold px-2 py-0.5 bg-blue-50 text-blue-700 rounded border border-blue-200">
-                            {p.totalInspections ?? 0} Scans
+                            {(p as unknown as { totalInspections?: number }).totalInspections ?? 0} Scans
                           </span>
                         </td>
                         <td className="px-6 py-3.5 text-right">

@@ -3,31 +3,16 @@
 import React, { useEffect, useState, use } from "react";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { TopBar } from "@/components/layout/TopBar";
-import { Card, CardHeader, CardBody, CardFooter } from "@/components/ui/Card";
+import { Card, CardHeader, CardBody } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { StatusBadge, StatusType } from "@/components/ui/Badge";
 import {
   CheckCircle2,
-  XCircle,
-  AlertTriangle,
-  FileText,
   Download,
   ShieldAlert,
-  ShieldCheck,
-  Eye,
   BookOpen,
-  UserCheck,
-  Building2,
-  Calendar,
-  DollarSign,
-  Phone,
-  Globe,
-  Package,
-  Layers,
-  Scale,
-  Sparkles,
 } from "lucide-react";
-import { ApiRequestError, apiFetch, useSession } from "@/lib/session";
+import type { ScanDetailPayload, Violation } from "@/lib/domain";
 
 export default function InspectionDetailPage({
   params,
@@ -37,7 +22,7 @@ export default function InspectionDetailPage({
   const { id } = use(params);
   const { user, can } = useSession();
 
-  const [scanData, setScanData] = useState<any>(null);
+  const [scanData, setScanData] = useState<ScanDetailPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -63,9 +48,9 @@ export default function InspectionDetailPage({
 
     try {
       const payload = await apiFetch<{
-        scan: any;
-        images: any[];
-        analysis: any;
+        scan: Scan;
+        images: ScanImage[];
+        analysis: ComplianceAnalysis | null;
       }>(`/scans/${encodeURIComponent(id)}`);
 
       setScanData(payload);
@@ -117,8 +102,8 @@ export default function InspectionDetailPage({
   };
 
   const handleGenerateReport = async () => {
-    setIsGeneratingReport(true);
-    setReportError(null);
+                    }
+                    }
     try {
       const data = await apiFetch<{ pdfUrl?: string; reportNumber?: string }>(
         `/inspections/${encodeURIComponent(id)}/report`,
@@ -158,10 +143,10 @@ export default function InspectionDetailPage({
   const analysis = scanData?.analysis;
   const scan = scanData?.scan;
   const originalImages =
-    scanData?.images?.filter((i: any) => i.imageType === "ORIGINAL") || [];
+    scanData?.images?.filter((i) => i.imageType === "ORIGINAL") || [];
 
   const preprocessedImages =
-    scanData?.images?.filter((i: any) => i.imageType === "PREPROCESSED") || [];
+    scanData?.images?.filter((i) => i.imageType === "PREPROCESSED") || [];
 
   return (
     <div className="flex min-h-screen bg-[#F8FAFC]">
@@ -206,8 +191,8 @@ export default function InspectionDetailPage({
                 <strong className="text-slate-700">
                   {analysis?.classification?.category || "Not detected"}
                 </strong>{" "}
-                • Inspected:{" "}
-                {scan?.createdAt ? new Date(scan.createdAt).toLocaleString("en-IN") : "Not recorded"} •
+                â€¢ Inspected:{" "}
+                {scan?.createdAt ? new Date(scan.createdAt).toLocaleString("en-IN") : "Not recorded"} â€¢
                 Location: {scan?.location || "Not specified"}
               </p>
             </div>
@@ -274,7 +259,7 @@ export default function InspectionDetailPage({
                             "Not detected"}
                         </div>
                         <div className="border border-emerald-600 bg-emerald-600/10 p-1 rounded font-bold text-emerald-900">
-                          [MRP] ₹
+                          [MRP] â‚¹
                           {analysis?.declarations?.mrp?.value ?? "Not detected"}{" "}
                           (Incl. of taxes)
                         </div>
@@ -302,7 +287,7 @@ export default function InspectionDetailPage({
                     </div> */}
 
                     <div className="grid grid-cols-2 gap-4">
-                      {originalImages.map((image: any, index: number) => (
+                      {originalImages.map((image, index: number) => (
                         <div
                           key={image.id}
                           className="bg-white rounded-lg border border-slate-200 overflow-hidden"
@@ -330,7 +315,7 @@ export default function InspectionDetailPage({
                   </div>
 
                   <div className="flex items-center justify-between text-xs text-slate-500 px-1">
-                    <span>✓ High-DPI CLAHE Preprocessing Applied</span>
+                    <span>âœ“ High-DPI CLAHE Preprocessing Applied</span>
                     <span>Format: JPEG (1000x1000)</span>
                   </div>
                 </CardBody>
@@ -478,7 +463,7 @@ export default function InspectionDetailPage({
                 />
                 <CardBody className="space-y-4">
                   {analysis?.violations && analysis.violations.length > 0 ? (
-                    analysis.violations.map((v: any, idx: number) => (
+                    analysis.violations.map((v, idx: number) => (
                       <div
                         key={idx}
                         className="p-4 bg-red-50 border border-red-200 rounded-xl space-y-2 text-xs"
@@ -533,8 +518,8 @@ export default function InspectionDetailPage({
                     // 1. Gather specific violation legal context
                     if (analysis?.violations) {
                       for (const v of analysis.violations) {
-                        if (v.legalContext) {
-                          for (const lc of v.legalContext) {
+                        if ((v as unknown as { legalContext?: unknown[] }).legalContext) {
+                          for (const lc of (v as unknown as { legalContext?: unknown[] }).legalContext) {
                             const key = lc.ruleId || lc.ruleNumber;
                             if (key && !seen.has(key)) {
                               seen.add(key);
@@ -545,9 +530,7 @@ export default function InspectionDetailPage({
                       }
                     }
 
-                    // 2. Gather general retrieved context for the commodity
-                    if (analysis?.retrievedContext) {
-                      for (const rc of analysis.retrievedContext) {
+                    // 2. Gather general retrieved context for the commodity\r\n                                        if ((analysis as any)?.retrievedContext) {\r\n                      for (const rc of (analysis as any).retrievedContext) {
                         const key = rc.ruleId || rc.ruleNumber;
                         if (key && !seen.has(key)) {
                           seen.add(key);

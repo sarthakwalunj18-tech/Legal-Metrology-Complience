@@ -4,19 +4,13 @@ import React, { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { TopBar } from "@/components/layout/TopBar";
-import { Card, CardHeader, CardBody, CardFooter } from "@/components/ui/Card";
+import { Card, CardHeader, CardBody } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import {
   Upload,
   ScanSearch,
   CheckCircle2,
   AlertCircle,
-  FileText,
-  Image as ImageIcon,
-  Building2,
-  Layers,
-  Sparkles,
-  ArrowRight,
   RefreshCw,
 } from "lucide-react";
 import { ApiRequestError, apiFetch } from "@/lib/session";

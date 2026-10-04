@@ -8,28 +8,22 @@ import { Card, CardHeader, CardBody, CardFooter } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { StatusBadge, StatusType } from "@/components/ui/Badge";
 import {
-  Package,
   History,
   Calendar,
-  Building2,
-  AlertTriangle,
-  CheckCircle2,
-  XCircle,
   Eye,
-  FileText,
-  TrendingUp,
   ArrowLeft,
 } from "lucide-react";
 import { ApiRequestError, apiFetch } from "@/lib/session";
+import type { Product } from "@/lib/domain";
 
 export default function ProductHistoryPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const [productData, setProductData] = useState<any>(null);
+  const [productData, setProductData] = useState<ProductDetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    apiFetch<{ product: any; totalInspections: number; history: any[] }>(
+    apiFetch<ProductDetailResponse>(
       `/products/${encodeURIComponent(id)}/history`,
     )
       .then((data) => {
@@ -83,7 +77,7 @@ export default function ProductHistoryPage({ params }: { params: Promise<{ id: s
     );
   }
 
-  const inspectionHistory: any[] = productData?.history ?? [];
+  const inspectionHistory: ProductHistoryScan[] = productData?.history ?? [];
 
   return (
     <div className="flex min-h-screen bg-[#F8FAFC]">
@@ -149,7 +143,7 @@ export default function ProductHistoryPage({ params }: { params: Promise<{ id: s
                   No inspections have been recorded against this commodity yet.
                 </p>
               ) : (
-                inspectionHistory.map((scan: any, idx: number) => (
+                inspectionHistory.map((scan, idx) => (
                 <div key={scan.id || idx} className="relative">
                   {/* Timeline Dot */}
                   <div
@@ -196,9 +190,9 @@ export default function ProductHistoryPage({ params }: { params: Promise<{ id: s
                           <strong className="text-slate-800">{scan.reviewStatus ?? "NOT REVIEWED"}</strong>
                         </span>
                       </div>
-                      {scan.notes && (
+                      {'' && (
                         <div className="p-2.5 bg-slate-50 border border-slate-100 rounded text-slate-600 text-[11px]">
-                          <strong>Inspector Observation:</strong> {scan.notes}
+                          <strong>Inspector Observation:</strong> {''}
                         </div>
                       )}
                     </CardBody>
@@ -219,4 +213,20 @@ export default function ProductHistoryPage({ params }: { params: Promise<{ id: s
       </div>
     </div>
   );
+}
+
+interface ProductHistoryScan {
+  id: string;
+  scanNumber: string;
+  complianceStatus: string | null;
+  complianceScore: number | string | null;
+  reviewStatus: string | null;
+  location: string | null;
+  createdAt: string;
+}
+
+interface ProductDetailResponse {
+  product: Product;
+  totalInspections: number;
+  history: ProductHistoryScan[];
 }

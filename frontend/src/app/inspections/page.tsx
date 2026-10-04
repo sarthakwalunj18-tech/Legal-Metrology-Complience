@@ -4,21 +4,24 @@ import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { TopBar } from "@/components/layout/TopBar";
-import { Card, CardHeader, CardBody, CardFooter } from "@/components/ui/Card";
+import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { StatusBadge } from "@/components/ui/Badge";
-import { ScanSearch, Filter, Eye, FileText, Search, Plus } from "lucide-react";
+import { Eye, Search, Plus } from "lucide-react";
 import { ApiRequestError, apiFetch } from "@/lib/session";
 
+import type { ScanRow } from "@/lib/domain";
+
 interface ScanListPayload {
-  scans: any[];
+  scans: ScanRow[];
   total: number;
   page: number;
-  pageCount: number;
+  pageSize?: number;
+  pageCount?: number;
 }
 
 export default function InspectionsListPage() {
-  const [scans, setScans] = useState<any[]>([]);
+  const [scans, setScans] = useState<ScanRow[]>([]);
   const [total, setTotal] = useState(0);
   const [searchTerm, setSearchTerm] = useState("");
   const [filterStatus, setFilterStatus] = useState("ALL");

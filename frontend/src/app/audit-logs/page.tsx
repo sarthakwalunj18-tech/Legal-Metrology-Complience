@@ -3,20 +3,20 @@
 import React, { useEffect, useState } from "react";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { TopBar } from "@/components/layout/TopBar";
-import { Card, CardHeader, CardBody } from "@/components/ui/Card";
-import { Button } from "@/components/ui/Button";
-import { History, Shield, Filter, Search } from "lucide-react";
+import { Card } from "@/components/ui/Card";
 import { ApiRequestError, apiFetch } from "@/lib/session";
+import type { AuditLogRow } from "@/lib/domain";
 
 interface AuditListPayload {
-  logs: any[];
+  logs: AuditLogRow[];
   total: number;
   page: number;
-  pageCount: number;
+  pageSize?: number;
+  pageCount?: number;
 }
 
 export default function AuditLogsPage() {
-  const [logs, setLogs] = useState<any[]>([]);
+  const [logs, setLogs] = useState<AuditLogRow[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -99,10 +99,10 @@ export default function AuditLogsPage() {
                       </td>
                     </tr>
                   ) : (
-                    logs.map((log: any) => (
+                    logs.map((log) => (
                       <tr key={log.id} className="hover:bg-slate-50 transition-colors">
                         <td className="px-6 py-3.5 text-slate-500 font-mono">
-                          {new Date(log.timestamp ?? log.createdAt).toLocaleString("en-IN")}
+                          {new Date(log.createdAt).toLocaleString("en-IN")}
                         </td>
                         <td className="px-6 py-3.5 font-medium text-slate-900">{log.userEmail ?? "—"}</td>
                         <td className="px-6 py-3.5">
