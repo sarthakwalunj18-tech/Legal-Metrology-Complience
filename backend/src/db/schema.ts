@@ -275,6 +275,33 @@ export const auditLogs = pgTable(
   }),
 );
 
+/**
+ * In-app notifications for officers.
+ *
+ * Deliberately separate from `audit_logs`: audit is an immutable record of who did
+ * what, notifications are a per-officer inbox that can be read and dismissed.
+ */
+export const notifications = pgTable(
+  "notifications",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    type: varchar("type", { length: 60 }).notNull(),
+    title: varchar("title", { length: 200 }).notNull(),
+    body: text("body"),
+    resourceType: varchar("resource_type", { length: 60 }),
+    resourceId: varchar("resource_id", { length: 255 }),
+    href: varchar("href", { length: 255 }),
+    readAt: timestamp("read_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    userIdx: index("notifications_user_id_idx").on(table.userId),
+    createdIdx: index("notifications_created_at_idx").on(table.createdAt),
+    unreadIdx: index("notifications_unread_idx").on(table.userId, table.readAt),
+  }),
+);
+
 // Relations
 export const productsRelations = relations(products, ({ many }) => ({
   scans: many(scans),

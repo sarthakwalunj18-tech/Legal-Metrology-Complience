@@ -5,10 +5,12 @@ import {
   authenticate,
   requireAuthenticatedUser,
   requirePermission,
+  resolveOwnerDepartment,
   type AuthUser,
 } from "../middleware/auth.js";
 import { expensiveAiRateLimit, standardRateLimit } from "../middleware/rate-limit.js";
 import { InspectionPipelineService } from "../services/inspection/pipeline.service.js";
+import { NotificationService } from "../services/notification.service.js";
 import { ReportService } from "../services/reports/report.service.js";
 import { StorageService } from "../services/storage.service.js";
 import { DBRepo } from "../db/repo.js";
@@ -39,7 +41,7 @@ export const inspectionRoutes: FastifyPluginAsync = async (fastify: FastifyInsta
       assertScanAccess(user, {
         id,
         inspectorId: scan.inspectorId as string | undefined,
-        department: await resolveOwnerDepartment(user, scan.inspectorId as string | undefined),
+        department: await resolveOwnerDepartment(scan.inspectorId as string | undefined),
       });
 
       await DBRepo.updateScan(id, {
@@ -111,7 +113,7 @@ export const inspectionRoutes: FastifyPluginAsync = async (fastify: FastifyInsta
       assertScanAccess(user, {
         id,
         inspectorId: scan.inspectorId as string | undefined,
-        department: await resolveOwnerDepartment(user, scan.inspectorId as string | undefined),
+        department: await resolveOwnerDepartment(scan.inspectorId as string | undefined),
       });
 
       // Separation of duties: the officer who ran the analysis must not sign it off.
@@ -177,7 +179,7 @@ export const inspectionRoutes: FastifyPluginAsync = async (fastify: FastifyInsta
       assertScanWriteAccess(user, {
         id,
         inspectorId: scan.inspectorId as string | undefined,
-        department: await resolveOwnerDepartment(user, scan.inspectorId as string | undefined),
+        department: await resolveOwnerDepartment(scan.inspectorId as string | undefined),
       });
 
       const report = await ReportService.generateInspectionReport(id, user.id);
@@ -189,6 +191,13 @@ export const inspectionRoutes: FastifyPluginAsync = async (fastify: FastifyInsta
         resourceType: "REPORT",
         resourceId: String((report as { reportId?: string }).reportId ?? id),
         details: { scanId: id, reportNumber: (report as { reportNumber?: string }).reportNumber },
+      });
+
+      // The author gets told their report is ready to download.
+      void NotificationService.reportReady({
+        id: String((report as { reportId?: string }).reportId ?? id),
+        reportNumber: (report as { reportNumber?: string }).reportNumber,
+        inspectorId: scan.inspectorId as string | null | undefined,
       });
 
       return reply.status(201).send({ success: true, data: report });
@@ -382,15 +391,6 @@ async function visibleInspectorIds(user: AuthUser): Promise<string[] | undefined
     .map((member) => String(member.id));
 }
 
-/**
- * Supervisors are scoped by department, which lives on the officer record rather
- * than on the inspection, so it has to be resolved before the access check.
- */
-async function resolveOwnerDepartment(user: AuthUser, inspectorId?: string): Promise<string | undefined> {
-  if (user.role !== "SUPERVISOR" || !inspectorId) return undefined;
-  const owner = await DBRepo.getUserById(inspectorId);
-  return owner?.department ?? undefined;
-}
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {

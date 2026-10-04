@@ -1,4 +1,5 @@
 import { DBRepo } from "../../db/repo.js";
+import { NotificationService } from "../notification.service.js";
 import { OcrService } from "../ocr/ocr.service.js";
 import { StorageService } from "../storage.service.js";
 import { GeminiExtractor } from "../extraction/gemini.extractor.js";
@@ -206,6 +207,29 @@ export class InspectionPipelineService {
     console.log(
       `[ANALYSIS] Inspection complete for scan ${scan.scanNumber}. Status: ${decision.complianceStatus}, Score: ${decision.complianceScore}%`,
     );
+
+    // Workflow events, not a poller: tell reviewers a case is waiting, and tell
+    // them about anything the rules engine flagged. Fire-and-forget, so a
+    // notification failure can never fail an inspection.
+    void NotificationService.reviewRequested({
+      id: scanId,
+      scanNumber: String(scan.scanNumber ?? scanId),
+      inspectorId: (scan.inspectorId as string | null | undefined) ?? null,
+      complianceStatus: decision.complianceStatus,
+    });
+
+    if (decision.violations.length > 0) {
+      void Promise.all(
+        decision.violations.map((violation) =>
+          NotificationService.violationRaised({
+            id: `${scanId}-${violation.ruleId}`,
+            title: violation.title,
+            severity: violation.severity,
+            scanId,
+          }),
+        ),
+      );
+    }
 
     return {
       scanId: String(scan.id),

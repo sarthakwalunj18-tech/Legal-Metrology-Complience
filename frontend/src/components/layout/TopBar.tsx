@@ -1,9 +1,10 @@
 "use client";
 
 import React from "react";
-import { Bell, HelpCircle, ChevronRight, RefreshCw } from "lucide-react";
+import { HelpCircle, ChevronRight, RefreshCw } from "lucide-react";
 import { roleLabel, useSession } from "@/lib/session";
 import { GlobalSearch } from "./GlobalSearch";
+import { NotificationBell } from "./NotificationBell";
 
 interface TopBarProps {
   breadcrumbs?: { label: string; href?: string }[];
@@ -56,13 +57,7 @@ export function TopBar({
 
         <div className="h-4 w-px bg-slate-200" />
 
-        <button
-          className="p-2 text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors relative"
-          title="Notifications"
-        >
-          <Bell className="w-4 h-4" />
-          <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-blue-600 rounded-full" />
-        </button>
+        {!loading && user ? <NotificationBell /> : null}
 
         <button
           className="p-2 text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors"

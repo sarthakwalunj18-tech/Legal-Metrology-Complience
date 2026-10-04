@@ -9,6 +9,7 @@ import {
   reports,
   auditLogs,
   users,
+  notifications,
 } from "./schema.js";
 import { and, asc, count, desc, eq, ilike, inArray, or, sql as drizzleSql, type SQL } from "drizzle-orm";
 import { officialLegalMetrologyRules } from "./seed.js";
@@ -128,6 +129,7 @@ const memoryStore: Record<string, Map<string, MemoryRow>> = {
   auditLogs: new Map(),
   rules: new Map(),
   users: new Map(),
+  notifications: new Map(),
 };
 
 for (const rule of officialLegalMetrologyRules) {
@@ -1186,6 +1188,113 @@ export class DBRepo {
     return Array.from(memoryStore.auditLogs.values()).sort(
       (a, b) => toDate(b.timestamp).getTime() - toDate(a.timestamp).getTime(),
     );
+  }
+
+  // -------------------------------------------------------------------------
+  // Notifications
+  // -------------------------------------------------------------------------
+
+  /**
+   * Files an in-app notification for one officer.
+   *
+   * Notification failures must never break the workflow that triggered them, so a
+   * missing table or a write error degrades to the in-memory store instead of
+   * propagating. An officer missing an inbox hint is a smaller problem than an
+   * inspection that cannot be signed off.
+   */
+  static async insertNotification(data: {
+    userId: string;
+    type: string;
+    title: string;
+    body?: string | null;
+    resourceType?: string | null;
+    resourceId?: string | null;
+    href?: string | null;
+  }) {
+    const payload = { ...data, createdAt: new Date(), readAt: null };
+
+    if (await isDatabaseLive()) {
+      const id = crypto.randomUUID();
+      try {
+        await db.insert(notifications).values({ id, ...payload } as typeof notifications.$inferInsert);
+        return { id, ...payload };
+      } catch (error) {
+        logger.warn("Failed to persist notification; keeping it in memory", {
+          type: data.type,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      memoryStore.notifications.set(id, { ...payload, id } as unknown as MemoryRow);
+      return { id, ...payload };
+    }
+
+    return memoryInsert("notifications", payload);
+  }
+
+  /**
+   * An officer's inbox, newest first.
+   *
+   * Scoped by `userId` in the query itself rather than filtered afterwards: a
+   * notification inbox is personal, so it is never assembled from a shared list.
+   */
+  static async getNotifications(userId: string, limit = 20) {
+    const capped = Math.min(100, Math.max(1, limit));
+
+    if (await isDatabaseLive()) {
+      try {
+        const rows = await db
+          .select()
+          .from(notifications)
+          .where(eq(notifications.userId, userId))
+          .orderBy(desc(notifications.createdAt))
+          .limit(capped);
+        if (rows.length > 0) return rows;
+      } catch (error) {
+        logger.warn("Failed to read notifications from the database; using memory", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return Array.from(memoryStore.notifications.values())
+      .filter((row) => String(row.userId) === String(userId))
+      .sort((a, b) => toDate(b.createdAt).getTime() - toDate(a.createdAt).getTime())
+      .slice(0, capped);
+  }
+
+  /** Marks one notification read, but only for the officer it belongs to. */
+  static async markNotificationRead(id: string, userId: string) {
+    const readAt = new Date();
+
+    if (await isDatabaseLive()) {
+      try {
+        const updated = await db
+          .update(notifications)
+          .set({ readAt })
+          .where(and(eq(notifications.id, id), eq(notifications.userId, userId)))
+          .returning();
+        if (updated.length > 0) return updated[0];
+      } catch (error) {
+        logger.warn("Failed to mark notification read in the database", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    const existing = memoryStore.notifications.get(id);
+    // Ownership check is not optional: without it any officer could mark (and by
+    // extension read the existence of) another officer's notifications.
+    if (!existing || String(existing.userId) !== String(userId)) return null;
+
+    const updated = { ...existing, readAt };
+    memoryStore.notifications.set(id, updated);
+    return updated;
+  }
+
+  /** Unread count for the bell badge. */
+  static async countUnreadNotifications(userId: string) {
+    const rows = await DBRepo.getNotifications(userId, 100);
+    return rows.filter((row) => !row.readAt).length;
   }
 
   static async getAuditLogsPage(

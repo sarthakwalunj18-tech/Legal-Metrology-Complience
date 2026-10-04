@@ -17,7 +17,8 @@ verified, and what is still open. Updated as work completes.
 | BFF / session integration | `npx tsx src/scripts/test-bff.ts` (in `backend`) | **Pass** — 37 checks, requires a prior frontend build |
 | Review & search authorisation | `npm run test:review` (in `backend`) | **Pass** — 34 checks |
 | Assistant grounding | `npm run test:assistant` (in `backend`) | **Pass** — 18 checks |
-| Whole regression suite | `npm run test:all` (in `backend`) | **Pass** — E2E + BFF + auth + review/search + assistant |
+| Notification inbox | `npm run test:notifications` (in `backend`) | **Pass** — 14 checks |
+| Whole regression suite | `npm run test:all` (in `backend`) | **Pass** — E2E + BFF + auth + review/search + assistant + notifications |
 | Module regression suite | `test-rag`, `test-rules`, `test-rule-engine`, `test-decision-engine`, `test-dashboard`, `test-product-history`, `test-report`, `test-violation-e2e` | **All pass** |
 
 The BFF test boots the real Fastify backend (`src/server.ts`) and the real Next.js
@@ -211,6 +212,31 @@ flow over HTTP. Run `npm run build` in `frontend` before running it.
 - Every query is written to the audit log (`RAG_ASSISTANCE_REQUESTED`) with whether the
   system could ground it and which rules it cited.
 
+### Notification inbox
+- The top-bar bell was a placeholder with a hard-coded dot and no feed. It is now a real
+  per-officer inbox (`GET /api/notifications`, `PATCH /api/notifications/:id/read`,
+  `GET /api/notifications/unread-count`) with a dropdown, unread badge, mark-all-read, and
+  60-second polling that pauses while the tab is hidden.
+- Notifications are raised from workflow events rather than a background poller, so a
+  missed notification means a missed event — which is visible — instead of silently
+  drifting. Wired to: review requested (analysis finished), review decided, violation
+  raised, report ready.
+- **An inbox is personal.** Rows are selected by `userId` in the query rather than
+  filtered afterwards, and marking read is `WHERE id = ? AND user_id = ?` — another
+  officer's notification returns 404 instead of confirming it exists, so nobody can
+  suppress someone else's alert by guessing an id.
+- The officer who performed an inspection is never asked to review their own work, even
+  when they also hold a reviewing role.
+- Notification writes are fire-and-forget and degrade to the in-memory store, so a
+  missing table or a failed write can never fail the inspection or sign-off that
+  triggered it.
+
+### One department-resolution helper, not three
+- `resolveOwnerDepartment` had been copy-pasted into three route files with subtly
+  different behaviour (two refused to resolve for non-supervisors, one had a directory
+  fallback). It now lives in `middleware/auth.ts` with `ownedScanResource`, and all three
+  routes share it. Duplicated security logic is how a scope check quietly stops being one.
+
 ### Stale module tests brought back to green
 `test-rules`, `test-rag`, `test-dashboard`, `test-product-history` and `test-e2e` all
 predated the auth/permission/scoping work and were failing on 401/403. Each now
@@ -238,7 +264,9 @@ None currently known. Every check in the table above is green.
   `no-explicit-any` warnings.
 - Confirm report/media URL topology for a deployed BFF (`PUBLIC_API_URL` vs. the
   proxied media path).
-- Notifications are still a placeholder bell in the top bar with no feed behind it.
+- The `notifications` table needs a Drizzle migration generated (`npm run db:generate`)
+  and applied before it will persist to a live PostgreSQL instance; until then it falls
+  back to the in-memory store by design.
 - The in-memory RAG index returns its top-K for *any* query, including unrelated ones.
   The assistant gates on lexical grounding, but `RagLegalService` itself still hands weak
   matches to the inspection detail view's citations. A relevance floor, or better

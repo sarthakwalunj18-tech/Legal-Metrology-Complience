@@ -15,6 +15,7 @@ import { analyticsRoutes } from "./routes/analytics.js";
 import { userRoutes } from "./routes/users.js";
 import { searchRoutes } from "./routes/search.js";
 import { mediaRoutes } from "./routes/media.js";
+import { notificationRoutes } from "./routes/notifications.js";
 import { securityHeadersHook } from "./middleware/security.js";
 import { accessLogHook, requestContextHook } from "./middleware/request-context.js";
 import { NotFoundError, serializeError } from "./lib/errors.js";
@@ -104,6 +105,7 @@ export function buildApp(): FastifyInstance {
   app.register(userRoutes, { prefix: "/api" });
   app.register(searchRoutes, { prefix: "/api" });
   app.register(mediaRoutes, { prefix: "/api" });
+  app.register(notificationRoutes, { prefix: "/api" });
 
   app.get("/", async () => {
     return {

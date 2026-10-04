@@ -10,6 +10,7 @@ import {
 import { standardRateLimit } from "../middleware/rate-limit.js";
 import { DBRepo } from "../db/repo.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "../lib/errors.js";
+import { NotificationService } from "../services/notification.service.js";
 import { z } from "zod";
 
 const decisionPayloadSchema = z.object({
@@ -184,6 +185,18 @@ export const reviewRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
               : "AGREED",
         },
       });
+
+      // The officer who ran the inspection is told the outcome. Fire-and-forget:
+      // the determination is already recorded and audited at this point.
+void NotificationService.reviewDecided(
+          {
+            id,
+            scanNumber: updatedScan.scanNumber as string | undefined,
+            inspectorId: existing?.inspectorId as string | null | undefined,
+          },
+          decision,
+          user.name,
+        );
 
       return reply.status(200).send({
         success: true,
