@@ -20,6 +20,9 @@ obj/
 *.pem
 id_rsa
 
+# Development-only media signing key (see src/lib/media-signing.ts)
+.media-signing-dev.key
+
 # 4. System-specific files (Hidden files created by your Operating System)
 .DS_Store
 Thumbs.db
