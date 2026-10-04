@@ -18,7 +18,8 @@ verified, and what is still open. Updated as work completes.
 | Review & search authorisation | `npm run test:review` (in `backend`) | **Pass** — 34 checks |
 | Assistant grounding | `npm run test:assistant` (in `backend`) | **Pass** — 18 checks |
 | Notification inbox | `npm run test:notifications` (in `backend`) | **Pass** — 14 checks |
-| Whole regression suite | `npm run test:all` (in `backend`) | **Pass** — E2E + BFF + auth + review/search + assistant + notifications |
+| Migration / schema drift | `npm run test:migrations` (in `backend`) | **Pass** — 18 checks |
+| Whole regression suite | `npm run test:all` (in `backend`) | **Pass** — E2E + BFF + auth + review/search + assistant + notifications + migrations |
 | Module regression suite | `test-rag`, `test-rules`, `test-rule-engine`, `test-decision-engine`, `test-dashboard`, `test-product-history`, `test-report`, `test-violation-e2e` | **All pass** |
 
 The BFF test boots the real Fastify backend (`src/server.ts`) and the real Next.js
@@ -257,6 +258,11 @@ API renamed to `severityBreakdown`.
 
 None currently known. Every check in the table above is green.
 
+Not verified here: the SQL in `src/db/migrations/*.sql` has never been executed —
+no Postgres or Docker is available in this environment. What *is* verified is that
+each migration still matches its Drizzle schema (`npm run test:migrations`), so the
+SQL cannot silently omit a column. The first real `psql` run remains outstanding.
+
 ## Open work
 
 - Adopt the new `frontend/src/lib/domain.ts` types in `audit-logs`, `inspections`,
@@ -264,9 +270,14 @@ None currently known. Every check in the table above is green.
   `no-explicit-any` warnings.
 - Confirm report/media URL topology for a deployed BFF (`PUBLIC_API_URL` vs. the
   proxied media path).
-- The `notifications` table needs a Drizzle migration generated (`npm run db:generate`)
-  and applied before it will persist to a live PostgreSQL instance; until then it falls
-  back to the in-memory store by design.
+- The `notifications` table ships with migration
+  `backend/src/db/migrations/0004_notifications.sql`. These migrations are
+  hand-written additive SQL, **not** `drizzle-kit generate` output — there is no
+  `meta/_journal.json`, so `db:generate` cannot diff and would try to recreate the
+  whole schema. Apply it with `psql`:
+  `psql "$DATABASE_URL" -f src/db/migrations/0004_notifications.sql`.
+  Until it is applied, notification writes fall back to the in-memory store by
+  design, so an un-migrated database stays correct rather than erroring.
 - The in-memory RAG index returns its top-K for *any* query, including unrelated ones.
   The assistant gates on lexical grounding, but `RagLegalService` itself still hands weak
   matches to the inspection detail view's citations. A relevance floor, or better
