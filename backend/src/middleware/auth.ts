@@ -411,6 +411,38 @@ export interface OwnedResource {
 }
 
 /**
+ * Department of the officer who owns a scan.
+ *
+ * Scan rows carry no department, so supervisor scoping cannot be decided from the
+ * scan alone — without this, `assertScanAccess` would treat every scan as global
+ * and let a supervisor reach another department's inspections by guessing an id.
+ *
+ * Falls back to a directory scan because a scan may reference an officer id that
+ * has no `users` row (development identities in particular).
+ */
+export async function resolveOwnerDepartment(inspectorId?: string | null): Promise<string | undefined> {
+  if (!inspectorId) return undefined;
+
+  const ownerId = String(inspectorId);
+  const owner = await DBRepo.getUserById(ownerId);
+  if (owner?.department) return owner.department;
+
+  const directory = await DBRepo.getAllUsers();
+  return directory.find((member) => String(member.id) === ownerId)?.department ?? undefined;
+}
+
+/** `assertScanAccess` input for a scan, with owner scope resolved. */
+export async function ownedScanResource(
+  scan: { id: string; inspectorId?: string | null } | null,
+): Promise<OwnedResource> {
+  return {
+    id: scan?.id ?? "",
+    inspectorId: scan?.inspectorId ?? null,
+    department: await resolveOwnerDepartment(scan?.inspectorId),
+  };
+}
+
+/**
  * Decides whether a user may read/modify a scan-level resource.
  *
  * INSPECTOR : own records only.

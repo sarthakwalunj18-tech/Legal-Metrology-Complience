@@ -562,6 +562,8 @@ export class DBRepo {
       severity?: string;
       productId?: string;
       inspectorId?: string;
+      /** Department-wide scope: matches any of these officer ids. */
+      inspectorIds?: string[];
       location?: string;
       fromDate?: string;
       toDate?: string;
@@ -597,6 +599,9 @@ export class DBRepo {
       if (params.status) conditions.push(eq(scans.status, params.status));
       if (params.productId) conditions.push(eq(scans.productId, params.productId));
       if (params.inspectorId) conditions.push(eq(scans.inspectorId, params.inspectorId));
+      if (params.inspectorIds && params.inspectorIds.length > 0) {
+        conditions.push(inArray(scans.inspectorId, params.inspectorIds));
+      }
       if (params.location) conditions.push(ilike(scans.location, `%${params.location}%`));
       if (params.fromDate) conditions.push(drizzleSql`${scans.createdAt} >= ${params.fromDate}`);
       if (params.toDate) conditions.push(drizzleSql`${scans.createdAt} <= ${params.toDate}`);
@@ -619,6 +624,9 @@ export class DBRepo {
         if (params.status && row.status !== params.status) return false;
         if (params.productId && row.productId !== params.productId) return false;
         if (params.inspectorId && row.inspectorId !== params.inspectorId) return false;
+        if (params.inspectorIds && params.inspectorIds.length > 0) {
+          if (!row.inspectorId || !params.inspectorIds.includes(String(row.inspectorId))) return false;
+        }
         if (params.location && !textMatch(row.location, params.location.toLowerCase())) return false;
         if (params.fromDate && toDate(row.createdAt) < new Date(params.fromDate)) return false;
         if (params.toDate && toDate(row.createdAt) > new Date(`${params.toDate}T23:59:59.999Z`)) return false;
@@ -1701,7 +1709,7 @@ export class DBRepo {
    */
   static async globalSearch(
     query: string,
-    options: { limitPerGroup?: number; inspectorId?: string } = {},
+    options: { limitPerGroup?: number; inspectorId?: string; inspectorIds?: string[] } = {},
   ): Promise<{
     inspections: Array<Record<string, unknown>>;
     products: Array<Record<string, unknown>>;
@@ -1714,13 +1722,49 @@ export class DBRepo {
     const q = trimmed.toLowerCase();
     const limit = options.limitPerGroup ?? 5;
 
-    const [scansPage, productsPage, violationsPage, allScans, allViolations] = await Promise.all([
-      DBRepo.getScansPage({ search: q, pageSize: limit, inspectorId: options.inspectorId }),
+    // Single-id option is the degenerate case of the scope list.
+    const scopeIds = options.inspectorIds ?? (options.inspectorId ? [options.inspectorId] : undefined);
+    const scopeSet = scopeIds ? new Set(scopeIds.map(String)) : null;
+
+    const [scansPage, productsPage, violationsPage, allScans] = await Promise.all([
+      DBRepo.getScansPage({
+        search: q,
+        pageSize: limit,
+        inspectorId: scopeSet?.size === 1 ? [...scopeSet][0] : undefined,
+        ...(scopeSet && scopeSet.size > 1 ? { inspectorIds: [...scopeSet] } : {}),
+      }),
       DBRepo.getProductsPage({ search: q, pageSize: limit }),
-      DBRepo.getViolationsPage({ search: q, pageSize: limit }),
+      DBRepo.getViolationsPage({
+        search: q,
+        pageSize: limit,
+        ...(scopeSet?.size === 1 ? { inspectorId: [...scopeSet][0] } : {}),
+      }),
       DBRepo.getAllScans(),
-      DBRepo.getAllViolations(),
     ]);
+
+    const scanById = new Map(allScans.map((scan) => [String(scan.id), scan]));
+
+    // getViolationsPage only accepts a single inspectorId, so a department-wide
+    // scope is enforced here against the owning inspection.
+    const scopedViolations =
+      scopeSet && scopeSet.size > 1
+        ? violationsPage.items.filter((violation) => {
+            const owner = scanById.get(String(violation.scanId))?.inspectorId;
+            return owner ? scopeSet.has(String(owner)) : false;
+          })
+        : violationsPage.items;
+
+    // Likewise, only surface products this officer has actually inspected.
+    const scopedProducts = scopeSet
+      ? productsPage.items.filter((product) =>
+          allScans.some(
+            (scan) =>
+              String(scan.productId) === String(product.id) &&
+              scan.inspectorId &&
+              scopeSet.has(String(scan.inspectorId)),
+          ),
+        )
+      : productsPage.items;
 
     const productById = new Map(
       (await DBRepo.getAllProducts()).map((product) => [String(product.id), product]),
@@ -1745,8 +1789,6 @@ export class DBRepo {
         requirement: rule.requirement,
       }));
 
-    const scanById = new Map(allScans.map((scan) => [String(scan.id), scan]));
-
     const inspections = scansPage.items.map((scan) => {
       const product = scan.productId ? productById.get(String(scan.productId)) : undefined;
       return {
@@ -1760,7 +1802,7 @@ export class DBRepo {
       };
     });
 
-    const violations = violationsPage.items.map((violation) => {
+    const violations = scopedViolations.map((violation) => {
       const scan = scanById.get(String(violation.scanId));
       return {
         id: violation.id,
@@ -1772,9 +1814,7 @@ export class DBRepo {
       };
     });
 
-    void allViolations;
-
-    return { inspections, products: productsPage.items, rules, violations };
+    return { inspections, products: scopedProducts, rules, violations };
   }
 }
 

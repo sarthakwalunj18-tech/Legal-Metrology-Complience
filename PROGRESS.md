@@ -12,9 +12,11 @@ verified, and what is still open. Updated as work completes.
 | Backend typecheck | `npx tsc --noEmit` (in `backend`) | **Pass** — 0 errors |
 | Frontend typecheck | `npm run typecheck` (in `frontend`) | **Pass** — 0 errors |
 | Frontend lint | `npm run lint` (in `frontend`) | **Pass** — 0 errors, 76 warnings |
-| Frontend production build | `npm run build` (in `frontend`) | **Pass** — 14 routes compiled |
-| Backend module E2E | `npm test` (in `backend`) | **Pass** — Modules 0–17 green, including the signed-media check |
+| Frontend production build | `npm run build` (in `frontend`) | **Pass** — 18 routes compiled |
+| Backend module E2E | `npm test` (in `backend`) | **Pass** — Modules 0–17 green, including the signed-media check. Step 8 fetches the signed report URL over HTTP, so this one needs a backend listening on `PORT` |
 | BFF / session integration | `npx tsx src/scripts/test-bff.ts` (in `backend`) | **Pass** — 37 checks, requires a prior frontend build |
+| Review & search authorisation | `npm run test:review` (in `backend`) | **Pass** — 34 checks |
+| Whole regression suite | `npm run test:all` (in `backend`) | **Pass** — E2E + BFF + auth + review/search |
 | Module regression suite | `test-rag`, `test-rules`, `test-rule-engine`, `test-decision-engine`, `test-dashboard`, `test-product-history`, `test-report`, `test-violation-e2e` | **All pass** |
 
 The BFF test boots the real Fastify backend (`src/server.ts`) and the real Next.js
@@ -139,6 +141,52 @@ flow over HTTP. Run `npm run build` in `frontend` before running it.
   remaining occurrences are legacy `any` annotations in five data pages that predate
   this work, and tightening them is a follow-up rather than a lint-gate blocker.
 
+### Human review workspace (`/reviews`)
+- Supervisory sign-off was a bare endpoint with no interface. `/reviews` is now a
+  workspace: scoped pending queue on the left, evidence with a bounding-box overlay in
+  the centre, extracted values, confidence, rule reasoning and RAG citations on the
+  right, and accept / override / reject / re-inspect actions.
+- `GET /api/reviews` returns a **scoped** queue (own / department / global) rather than
+  every pending scan.
+- `POST /api/reviews/:id/decision` now loads the real scan before deciding anything, and
+  enforces separation of duties — the officer who performed an inspection can never be
+  the one who signs it off, administrators included. A sign-off is a legal
+  determination, so allowing the most privileged account to self-approve would void the
+  control.
+- Overrides must state the corrected compliance status; accepts may not smuggle one in.
+  Both are `400` validation errors, not `403`s, and every rejected payload writes
+  nothing.
+- The audit trail keeps the AI determination *and* the human outcome
+  (`aiDecision`, `previousComplianceStatus`, `finalComplianceStatus`, `agreement`,
+  `reviewerRole`), so agreement rates can be measured later.
+
+### Department scope could silently become global (fixed)
+- Scan rows carry no department, so `assertScanAccess` had nothing to compare and let a
+  supervisor reach **any** inspection by id. Owner-department resolution is now a shared
+  helper (`resolveOwnerDepartment` / `ownedScanResource` in `middleware/auth.ts`), used
+  by both the scan and review routes, with a directory fallback for officers that have
+  no `users` row.
+
+### Violation management (`/violations`)
+- Search, severity and state filters, pagination, and a keyboard-accessible evidence
+  drawer showing the violation, its statutory basis, the reasoning and the owning
+  inspection. Violations were previously listable by API only.
+
+### Global search
+- Debounced (300 ms) search box in the top bar, `⌘K`/`Ctrl+K` to focus, results grouped
+  into inspections / violations / statutory rules / commodities, each row linking to the
+  owning record.
+- **Search was an unscoped read path.** `GET /api/search` ignored the caller's remit and
+  `globalSearch` fetched products and violations globally, so an inspector could type a
+  fragment of a name and discover another officer's enforcement work. Results are now
+  scoped to own / department / global, department scope filters violations against the
+  owning inspection, and products only surface once that officer has inspected them.
+- `getScansPage` gained real `inspectorIds` support (SQL `IN` + memory path). The
+  plural filter had been passed in but silently ignored, which is exactly the kind of
+  leak a test has to catch.
+- The empty-query response now returns the same keys as a populated one (`inspections`,
+  not `scans`) plus a `scope` label, so clients never special-case it.
+
 ### Stale module tests brought back to green
 `test-rules`, `test-rag`, `test-dashboard`, `test-product-history` and `test-e2e` all
 predated the auth/permission/scoping work and were failing on 401/403. Each now
@@ -161,11 +209,9 @@ None currently known. Every check in the table above is green.
 
 ## Open work
 
-- Retire the remaining `no-explicit-any` warnings in `audit-logs`, `inspections`,
-  `inspections/[id]`, `products` and `products/[id]` by introducing shared domain types
-  for the inspection/analysis payload.
-- Add `npm test` wiring for the per-module scripts so one command runs the whole
-  regression suite.
+- Adopt the new `frontend/src/lib/domain.ts` types in `audit-logs`, `inspections`,
+  `inspections/[id]`, `products` and `products/[id]` to retire the remaining
+  `no-explicit-any` warnings.
 - Confirm report/media URL topology for a deployed BFF (`PUBLIC_API_URL` vs. the
   proxied media path).
 - Live verification against real Supabase/PostgreSQL/Gemini/OCR/RAG services —

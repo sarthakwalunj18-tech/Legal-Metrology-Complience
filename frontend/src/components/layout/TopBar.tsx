@@ -3,6 +3,7 @@
 import React from "react";
 import { Bell, HelpCircle, ChevronRight, RefreshCw } from "lucide-react";
 import { roleLabel, useSession } from "@/lib/session";
+import { GlobalSearch } from "./GlobalSearch";
 
 interface TopBarProps {
   breadcrumbs?: { label: string; href?: string }[];
@@ -40,6 +41,8 @@ export function TopBar({
 
       {/* Right: Actions, Diagnostics, Profile */}
       <div className="flex items-center gap-4">
+        {!loading && user ? <GlobalSearch /> : null}
+
         {onRefresh && (
           <button
             onClick={onRefresh}

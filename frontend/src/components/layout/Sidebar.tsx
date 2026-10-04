@@ -18,6 +18,8 @@ import {
   Shield,
   LogOut,
   Loader2,
+  ClipboardCheck,
+  ShieldAlert,
 } from "lucide-react";
 
 interface NavItem {
@@ -43,6 +45,19 @@ export function Sidebar() {
       permission: "SCAN_CREATE",
     },
     { label: "Inspections", href: "/inspections", icon: ListChecks, permission: "SCAN_VIEW" },
+    {
+      label: "Review Queue",
+      href: "/reviews",
+      icon: ClipboardCheck,
+      badge: "Action",
+      permission: "INSPECTION_REVIEW",
+    },
+    {
+      label: "Violations",
+      href: "/violations",
+      icon: ShieldAlert,
+      permission: "VIOLATION_VIEW",
+    },
     { label: "Products", href: "/products", icon: Package, permission: "SCAN_VIEW" },
     { label: "Reports", href: "/reports", icon: FileText, permission: "REPORT_VIEW" },
   ];

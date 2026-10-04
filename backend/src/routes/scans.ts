@@ -4,6 +4,7 @@ import {
   authenticate,
   requirePermission,
   requireAuthenticatedUser,
+  resolveOwnerDepartment,
 } from "../middleware/auth.js";
 import { expensiveAiRateLimit, standardRateLimit } from "../middleware/rate-limit.js";
 import { StorageService } from "../services/storage.service.js";
@@ -199,7 +200,7 @@ export const scanRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =
       assertScanAccess(user, {
         id,
         inspectorId: scan?.inspectorId as string | undefined,
-        department: await resolveOwnerDepartment(user, scan?.inspectorId as string | undefined),
+        department: await resolveOwnerDepartment(scan?.inspectorId as string | undefined),
       });
       if (!scan) throw new NotFoundError("Inspection record", id);
 
@@ -286,7 +287,7 @@ export const scanRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =
       assertScanAccess(user, {
         id,
         inspectorId: scan?.inspectorId as string | undefined,
-        department: await resolveOwnerDepartment(user, scan?.inspectorId as string | undefined),
+        department: await resolveOwnerDepartment(scan?.inspectorId as string | undefined),
       });
       if (!scan) throw new NotFoundError("Inspection record", id);
 
@@ -330,9 +331,5 @@ function toPositiveInt(value: string | undefined): number | undefined {
 /**
  * Supervisors are scoped by department, which lives on the officer record rather
  * than on the inspection, so it has to be resolved before the access check.
+ * Shared with the review workflow via `middleware/auth.ts`.
  */
-async function resolveOwnerDepartment(user: { role: string }, inspectorId?: string): Promise<string | undefined> {
-  if (user.role !== "SUPERVISOR" || !inspectorId) return undefined;
-  const owner = await DBRepo.getUserById(inspectorId);
-  return owner?.department ?? undefined;
-}

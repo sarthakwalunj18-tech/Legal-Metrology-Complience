@@ -1,7 +1,15 @@
 import { FastifyInstance, FastifyPluginAsync } from "fastify";
-import { authenticate, requirePermission } from "../middleware/auth.js";
+import {
+  assertScanAccess,
+  authenticate,
+  ownedScanResource,
+  requireAuthenticatedUser,
+  requirePermission,
+  type AuthUser,
+} from "../middleware/auth.js";
 import { standardRateLimit } from "../middleware/rate-limit.js";
 import { DBRepo } from "../db/repo.js";
+import { ForbiddenError, NotFoundError, ValidationError } from "../lib/errors.js";
 import { z } from "zod";
 
 const decisionPayloadSchema = z.object({
@@ -10,21 +18,85 @@ const decisionPayloadSchema = z.object({
   overriddenStatus: z.enum(["COMPLIANT", "NON_COMPLIANT", "REQUIRES_REVIEW"]).optional(),
 });
 
+/**
+ * Officer ids a reviewer may sign off, or `undefined` for global scope.
+ *
+ * An override is a legal determination, so it must be scoped exactly like a
+ * read: an inspector sees only their own case, a supervisor only their
+ * department, an administrator everything.
+ */
+async function reviewableInspectorIds(user: AuthUser): Promise<string[] | undefined> {
+  if (user.role === "ADMIN") return undefined;
+  if (user.role === "INSPECTOR") return [user.id];
+
+  const departmentUsers = await DBRepo.getAllUsers();
+  return departmentUsers
+    .filter((member) => member.department === user.department)
+    .map((member) => String(member.id));
+}
+
+/**
+ * Separation of duties: the officer who ran the analysis must not be the person
+ * who signs it off. Enforced for every reviewer role, including administrators,
+ * because the control is worthless if the most privileged account can bypass it.
+ */
+function assertReviewerIsNotAuthor(
+  reviewer: AuthUser,
+  scan: { id?: string; inspectorId?: string | null } | null,
+): void {
+  const authorId = scan?.inspectorId ? String(scan.inspectorId) : null;
+  if (!authorId) return;
+
+  const reviewerIds = new Set<string>([reviewer.id]);
+  if (reviewer.supabaseUserId) reviewerIds.add(reviewer.supabaseUserId);
+
+  if (reviewerIds.has(authorId)) {
+    throw new ForbiddenError(
+      "Separation of duties: the officer who performed this inspection cannot sign it off. Route it to another reviewing officer.",
+      "INSUFFICIENT_PERMISSIONS",
+    );
+  }
+}
+
+/**
+ * Read guard for a single review target, with the owner's department attached so
+ * supervisor scoping cannot degrade to global access.
+ */
+async function assertReviewScope(
+  user: AuthUser,
+  scan: { id: string; inspectorId?: string | null } | null,
+): Promise<void> {
+  // Preserve not-found semantics for an unknown id before any scope reasoning,
+  // so probing cannot distinguish "missing" from "forbidden".
+  if (!scan) throw new NotFoundError("Inspection record");
+
+  assertScanAccess(user, await ownedScanResource(scan));
+}
+
 export const reviewRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
-  // List all inspections awaiting supervisor review
+  // Inspections awaiting a supervisory determination, within the caller's scope.
   fastify.get(
     "/reviews",
     { preHandler: [authenticate, requirePermission("INSPECTION_REVIEW"), standardRateLimit] },
     async (request, reply) => {
+      const user = requireAuthenticatedUser(request);
+
       const pending = await DBRepo.getPendingReviews();
+      const scope = await reviewableInspectorIds(user);
+      const visible =
+        scope === undefined
+          ? pending
+          : pending.filter((scan) => scope.includes(String(scan.inspectorId)));
+
       return reply.status(200).send({
         success: true,
         data: {
-          reviews: pending,
-          count: pending.length,
+          reviews: visible,
+          count: visible.length,
+          scope: scope === undefined ? "global" : user.role === "INSPECTOR" ? "own" : "department",
         },
       });
-    }
+    },
   );
 
   // Submit supervisor determination & override
@@ -32,6 +104,7 @@ export const reviewRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
     "/reviews/:id/decision",
     { preHandler: [authenticate, requirePermission("INSPECTION_APPROVE"), standardRateLimit] },
     async (request, reply) => {
+      const user = requireAuthenticatedUser(request);
       const { id } = request.params as { id: string };
       const parseResult = decisionPayloadSchema.safeParse(request.body);
 
@@ -48,10 +121,31 @@ export const reviewRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
 
       const { decision, notes, overriddenStatus } = parseResult.data;
 
+      // Load first: authorization is decided against the real record, never
+      // against whatever id the caller happened to send.
+      const existing = await DBRepo.getScan(id);
+      await assertReviewScope(user, existing);
+      assertReviewerIsNotAuthor(user, existing);
+
+      if (decision === "ACCEPTED" && overriddenStatus) {
+        throw new ValidationError(
+          "Accepting the AI decision must not also restate an outcome. Use OVERRIDDEN to change the compliance status.",
+        );
+      }
+
+      if (decision === "OVERRIDDEN" && !overriddenStatus) {
+        throw new ValidationError("An override must state the corrected compliance status.");
+      }
+
+      // Capture the AI determination before it is overwritten, so the audit
+      // trail records what the system said as well as what the human decided.
+      const previousComplianceStatus = existing?.complianceStatus ?? null;
+      const previousReviewStatus = existing?.reviewStatus ?? null;
+
       const updatedScan = await DBRepo.updateScan(id, {
         reviewStatus: decision,
         reviewerNotes: notes,
-        reviewedBy: request.user?.id && request.user.id.includes("-") ? request.user.id : undefined,
+        reviewedBy: user.id,
         reviewedAt: new Date(),
         ...(overriddenStatus ? { complianceStatus: overriddenStatus } : {}),
       });
@@ -66,19 +160,28 @@ export const reviewRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
         });
       }
 
-      // Record immutable audit log
+      // Append-only audit log: original AI decision and final decision both kept.
       await DBRepo.insertAuditLog({
-        userId: request.user?.id && request.user.id.includes("-") ? request.user.id : undefined,
-        userEmail: request.user?.email || "supervisor@lm.gov.in",
+        userId: user.id,
+        userEmail: user.email,
         action: decision === "OVERRIDDEN" ? "INSPECTION_OVERRIDDEN" : "INSPECTION_SUPERVISOR_REVIEW",
         resourceType: "SCAN",
         resourceId: id,
         details: {
           decision,
           notes,
-          overriddenStatus,
-          reviewerRole: request.user?.role,
-          previousStatus: updatedScan.complianceStatus,
+          overriddenStatus: overriddenStatus ?? null,
+          reviewerRole: user.role,
+          aiDecision: previousComplianceStatus,
+          previousComplianceStatus,
+          previousReviewStatus,
+          finalComplianceStatus: updatedScan.complianceStatus,
+          agreement:
+            decision === "OVERRIDDEN" && previousComplianceStatus
+              ? previousComplianceStatus === overriddenStatus
+                ? "AGREED"
+                : "DISAGREED"
+              : "AGREED",
         },
       });
 
@@ -89,6 +192,6 @@ export const reviewRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
           message: `Supervisor determination recorded: '${decision}'. Audit log created.`,
         },
       });
-    }
+    },
   );
 };
